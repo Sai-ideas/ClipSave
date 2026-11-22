@@ -1,12 +1,13 @@
 <resources>
     <style name="VaultTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:windowBackground">#F3F5EE</item>
-        <item name="android:colorAccent">#25624B</item>
+        <item name="android:windowBackground">@color/vault_background</item>
+        <item name="android:colorAccent">@color/vault_accent</item>
+        <item name="android:colorBackground">@color/vault_surface</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
-        <item name="android:windowLightStatusBar">true</item>
-        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowLightStatusBar">@bool/vault_light_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/vault_light_bars</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>

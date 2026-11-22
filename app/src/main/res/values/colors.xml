@@ -1,0 +1,12 @@
+<resources>
+    <color name="vault_background">#F5F4FA</color>
+    <color name="vault_surface">#FFFFFF</color>
+    <color name="vault_surface_soft">#ECE9F6</color>
+    <color name="vault_outline">#DCD8EB</color>
+    <color name="vault_text">#201C32</color>
+    <color name="vault_secondary_text">#625C73</color>
+    <color name="vault_accent">#5840AA</color>
+    <color name="vault_on_accent">#FFFFFF</color>
+    <color name="vault_ripple">#245840AA</color>
+    <bool name="vault_light_bars">true</bool>
+</resources>
