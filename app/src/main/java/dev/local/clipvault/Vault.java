@@ -116,8 +116,7 @@ final class Vault {
     }
 
     synchronized Entry addText(String text, boolean sensitive) throws Exception {
-        if (text.trim().isEmpty()) throw new Limit("沒有可儲存的文字。");
-        if (text.length() > MAX_TEXT) throw new Limit("文字超過 20,000 個字元。");
+        validateText(text);
         load();
         prune();
         long now = System.currentTimeMillis();
@@ -136,6 +135,28 @@ final class Vault {
                 false, false, sensitive, "");
         insert(next, entry);
         return entry;
+    }
+
+    synchronized Entry entry(String id) throws Exception {
+        load();
+        for (Entry entry : entries) {
+            if (entry.id().equals(id) && !expired(entry, retention)) return entry;
+        }
+        throw new Limit("這筆剪輯已不存在。");
+    }
+
+    synchronized void updateText(String id, String text) throws Exception {
+        validateText(text);
+        Entry current = entry(id);
+        if (current.attachment()) throw new Limit("只有文字與連結可以編輯。");
+        if (current.content().equals(text)) return;
+        update(new Entry(id, current.mime(), text, current.savedAt(), current.bytes(),
+                current.pinned(), current.starred(), current.sensitive(), current.tag()));
+    }
+
+    private static void validateText(String text) throws Limit {
+        if (text.trim().isEmpty()) throw new Limit("沒有可儲存的文字。");
+        if (text.length() > MAX_TEXT) throw new Limit("文字超過 20,000 個字元。");
     }
 
     synchronized Entry addAttachment(String mime, String name, byte[] data, boolean sensitive)
