@@ -20,7 +20,11 @@
                 <category android:name="android.intent.category.DEFAULT"/>
                 <data android:mimeType="text/plain"/>
                 <data android:mimeType="image/*"/>
-                <data android:mimeType="application/pdf"/>
+            </intent-filter>
+            <intent-filter android:label="存到剪存">
+                <action android:name="android.intent.action.PROCESS_TEXT"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
             </intent-filter>
         </activity>
         <provider
