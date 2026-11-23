@@ -1085,8 +1085,13 @@ public final class MainActivity extends Activity {
     }
 
     void confirm(String title, String message, String action, Runnable task) {
+        confirm(title, message, action, task, false);
+    }
+
+    void confirm(String title, String message, String action, Runnable task, boolean sensitive) {
         show(new AlertDialog.Builder(this).setTitle(title).setMessage(message)
                 .setNegativeButton("取消", null).setPositiveButton(action, (d, which) -> task.run()));
+        privateDialog = sensitive;
     }
 
     AlertDialog show(AlertDialog.Builder builder) {
