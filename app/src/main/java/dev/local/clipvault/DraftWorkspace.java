@@ -28,7 +28,7 @@ final class DraftWorkspace {
 
     private final MainActivity activity;
     private final Vault vault;
-    private final int ink, muted, accent, surfaceSoft;
+    private final int ink, muted, accent, surfaceSoft, danger;
     private boolean active;
     private boolean reloadShelf;
     private Draft current;
@@ -36,6 +36,7 @@ final class DraftWorkspace {
     private LinearLayout page;
     private record Export(String id, long updatedAt, boolean sensitive, Uri location) {}
     private record Drag(String draftId, int origin) {}
+    private record DeleteTarget(Draft draft, List<Draft> shelf) {}
 
     DraftWorkspace(MainActivity activity, Vault vault) {
         this.activity = activity;
@@ -44,6 +45,7 @@ final class DraftWorkspace {
         muted = activity.getColor(R.color.vault_secondary_text);
         accent = activity.getColor(R.color.vault_accent);
         surfaceSoft = activity.getColor(R.color.vault_surface_soft);
+        danger = activity.getColor(R.color.vault_danger);
     }
 
     boolean active() { return active; }
@@ -95,7 +97,10 @@ final class DraftWorkspace {
             item.addView(activity.text(displayName(draft), 18, ink, true));
             item.addView(activity.text(draft.sensitive() ? "驗證後開啟" : draft.blocks().size() + " 個區塊",
                     13, muted, false));
-            item.addView(button("開啟", () -> open(draft)), activity.margins(-2, -2, 5, 0));
+            LinearLayout actions = activity.row();
+            addAction(actions, "開啟", () -> open(draft));
+            addDeleteAction(actions, draft);
+            item.addView(actions, activity.margins(-1, -2, 5, 0));
             add(item, 10);
         }
     }
@@ -153,6 +158,12 @@ final class DraftWorkspace {
         current = draft;
         buildPage(draft.title(), "草稿", this::openShelf);
 
+        LinearLayout management = activity.row();
+        addAction(management, "重新命名", () -> editText("重新命名", "輸入文章標題", draft.title(),
+                Draft.MAX_TITLE, false, title -> update(draft, title, draft.blocks())));
+        addDeleteAction(management, draft);
+        add(management, 10);
+
         LinearLayout authoring = activity.row();
         addAction(authoring, "插入剪輯", () -> pickClip(draft));
         addAction(authoring, "新增段落", () -> addTextBlock(draft, Draft.Block.PARAGRAPH));
@@ -171,7 +182,6 @@ final class DraftWorkspace {
         addAction(output, "複製全文", () -> copy(draft));
         addAction(output, "匯出 ZIP", () -> export(draft));
         add(output, 12);
-        add(button("草稿設定", () -> draftOptions(draft)), 10);
         if (offset > 0) {
             View view = (View) page.getParent();
             view.post(() -> view.scrollTo(0, offset));
@@ -264,20 +274,31 @@ final class DraftWorkspace {
         });
     }
 
-    private void draftOptions(Draft draft) {
-        activity.show(new AlertDialog.Builder(activity).setTitle("草稿設定")
-                .setItems(new String[]{"重新命名", "刪除草稿"}, (dialog, which) -> {
-                    if (which == 0) {
-                        editText("重新命名", "輸入文章標題", draft.title(), Draft.MAX_TITLE, false,
-                                title -> update(draft, title, draft.blocks()));
-                    } else {
-                        activity.confirm("刪除草稿", "這篇草稿及其區塊將從剪存移除。", "刪除",
-                                () -> activity.runForeground(() -> {
-                                    vault.deleteDraft(draft.id());
-                                    return null;
-                                }, ignored -> openShelf()));
-                    }
-                }).setNegativeButton("取消", null));
+    private void addDeleteAction(LinearLayout actions, Draft draft) {
+        Button delete = addAction(actions, "刪除草稿", () -> requestDelete(draft));
+        delete.setTextColor(danger);
+        delete.setContentDescription("刪除草稿 " + displayName(draft));
+    }
+
+    private void requestDelete(Draft draft) {
+        activity.authorize(draft.sensitive(), "驗證後刪除私密草稿", () -> activity.runForeground(() -> {
+            Draft stored = vault.draft(draft.id());
+            if (stored.sensitive() && !draft.sensitive()) {
+                throw new Vault.Limit("草稿已改為私密，請重新開啟草稿清單。");
+            }
+            return new DeleteTarget(stored, vault.drafts());
+        }, target -> {
+            if (!active) renderShelf(target.shelf(), "還沒有草稿。");
+            Draft stored = target.draft();
+            activity.confirm("刪除草稿", "將永久刪除「" + stored.title() + "」和其中的區塊。來源剪輯會保留。",
+                    "刪除草稿", () -> activity.run(() -> {
+                        vault.deleteDraft(stored);
+                        return vault.drafts();
+                    }, drafts -> {
+                        renderShelf(drafts, "還沒有草稿。");
+                        activity.toast("已刪除草稿。");
+                    }, null), stored.sensitive());
+        }));
     }
 
     private void update(Draft draft, String title, List<Draft.Block> blocks) {

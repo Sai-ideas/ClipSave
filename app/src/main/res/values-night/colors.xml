@@ -6,6 +6,7 @@
     <color name="vault_text">#F2F1FA</color>
     <color name="vault_secondary_text">#B5B7CA</color>
     <color name="vault_accent">#CAB9FF</color>
+    <color name="vault_danger">#FFADBB</color>
     <color name="vault_on_accent">#291A4D</color>
     <color name="vault_ripple">#2CCAB9FF</color>
     <bool name="vault_light_bars">false</bool>

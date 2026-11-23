@@ -303,8 +303,9 @@ final class Vault {
         return updateDraft(current, source.sensitive() ? changed.protect() : changed);
     }
 
-    synchronized void deleteDraft(String id) throws Exception {
-        Draft current = draft(id);
+    synchronized void deleteDraft(Draft confirmed) throws Exception {
+        Draft current = draft(confirmed.id());
+        if (!current.equals(confirmed)) throw new Limit("草稿已有變更，請重新確認刪除。");
         ArrayList<Draft> next = new ArrayList<>(drafts);
         next.remove(current);
         commit(entries, retention, next);
