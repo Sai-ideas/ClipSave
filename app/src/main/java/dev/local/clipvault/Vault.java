@@ -18,7 +18,10 @@ import java.security.KeyStore;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -31,6 +34,8 @@ final class Vault {
     static final int MAX_TEXT = 20_000;
     static final int MAX_ATTACHMENT = 16 * 1024 * 1024;
     private static final int MAX_ENTRIES = 200;
+    private static final int MAX_DRAFTS = 30;
+    private static final int MAX_DRAFT_TEXT = 500_000;
     private static final long MAX_MEDIA_TOTAL = 96L * 1024 * 1024;
     private static final String KEY_ALIAS = "clipvault.v1";
     private static final String INDEX_PURPOSE = "index.v1";
@@ -44,16 +49,7 @@ final class Vault {
         String type() {
             if (mime.equals("application/pdf")) return "PDF";
             if (mime.startsWith("image/")) return "圖片";
-            String trimmed = content.trim();
-            if (trimmed.regionMatches(true, 0, "https://", 0, 8)
-                    || trimmed.regionMatches(true, 0, "http://", 0, 7)) {
-                try {
-                    if (URI.create(trimmed).getHost() != null) return "連結";
-                } catch (IllegalArgumentException ignored) {
-                    // Ordinary text does not need to be a valid URI.
-                }
-            }
-            return "文字";
+            return isWebLink(content) ? "連結" : "文字";
         }
 
         Entry withOptions(boolean pin, boolean star, boolean mask, String label) {
@@ -74,6 +70,17 @@ final class Vault {
         }
     }
 
+    static boolean isWebLink(String value) {
+        String trimmed = value.trim();
+        if (!trimmed.regionMatches(true, 0, "https://", 0, 8)
+                && !trimmed.regionMatches(true, 0, "http://", 0, 7)) return false;
+        try {
+            return URI.create(trimmed).getHost() != null;
+        } catch (IllegalArgumentException error) {
+            return false;
+        }
+    }
+
     static final class Limit extends IOException {
         Limit(String message) { super(message); }
     }
@@ -87,6 +94,8 @@ final class Vault {
     private final AtomicFile index;
     private SecretKey key;
     private ArrayList<Entry> entries;
+    private List<Draft> drafts;
+    private Set<String> reading;
     private int retention;
 
     private Vault(Context context) {
@@ -162,12 +171,12 @@ final class Vault {
     synchronized Entry addAttachment(String mime, String name, byte[] data, boolean sensitive)
             throws Exception {
         if (!supportsAttachment(mime) || data.length == 0 || data.length > MAX_ATTACHMENT) {
-            throw new Limit("請選擇 16 MB 以內的圖片或 PDF。");
+            throw new Limit("請選擇 16 MiB 以內的圖片。");
         }
         load();
         prune();
         ArrayList<Entry> next = new ArrayList<>(entries);
-        long used = next.stream().mapToLong(Entry::bytes).sum();
+        long used = storedAttachments(next, drafts).values().stream().mapToLong(Integer::longValue).sum();
         if (used + data.length > MAX_MEDIA_TOTAL) throw new Limit("附件空間已滿（96 MiB）。");
         Entry entry = new Entry(UUID.randomUUID().toString(), mime, name, System.currentTimeMillis(),
                 data.length, false, false, sensitive, "");
@@ -223,8 +232,93 @@ final class Vault {
         return decrypt(new AtomicFile(file(id)).readFully(), id);
     }
 
+    synchronized Set<String> reading() throws Exception {
+        load();
+        return new HashSet<>(reading);
+    }
+
+    synchronized void setReading(String id, boolean waiting) throws Exception {
+        Entry entry = entry(id);
+        if (!entry.type().equals("連結")) throw new Limit("待讀清單適用於網址。");
+        HashSet<String> next = new HashSet<>(reading);
+        if (waiting) next.add(id);
+        else next.remove(id);
+        commit(entries, retention, drafts, next);
+    }
+
+    synchronized List<Draft> drafts() throws Exception {
+        load();
+        ArrayList<Draft> ordered = new ArrayList<>(drafts);
+        ordered.sort(Comparator.comparingLong(Draft::updatedAt).reversed());
+        return ordered;
+    }
+
+    synchronized Draft draft(String id) throws Exception {
+        load();
+        for (Draft draft : drafts) {
+            if (draft.id().equals(id)) return draft;
+        }
+        throw new Limit("這篇草稿已不存在。");
+    }
+
+    synchronized Draft createDraft(String title) throws Exception {
+        load();
+        if (drafts.size() >= MAX_DRAFTS) throw new Limit("草稿已達 30 篇。");
+        Draft draft = Draft.create(title);
+        ArrayList<Draft> next = new ArrayList<>(drafts);
+        next.add(draft);
+        commit(entries, retention, next);
+        return draft;
+    }
+
+    synchronized Draft updateDraft(Draft original, Draft changed) throws Exception {
+        Draft current = draft(original.id());
+        if (!current.equals(original)) throw new Limit("草稿已有變更，請重新開啟。");
+        if (changed.blocks().size() > Draft.MAX_BLOCKS) throw new Limit("每篇草稿最多 50 個區塊。");
+        int size = changed.blocks().stream().mapToInt(block -> block.content().length()).sum();
+        for (Draft draft : drafts) {
+            if (!draft.id().equals(current.id())) {
+                size += draft.blocks().stream().mapToInt(block -> block.content().length()).sum();
+            }
+        }
+        if (size > MAX_DRAFT_TEXT) throw new Limit("草稿總文字量已達上限。");
+        ArrayList<Draft> next = new ArrayList<>(drafts);
+        next.set(next.indexOf(current), current.sensitive() ? changed.protect() : changed);
+        commit(entries, retention, next);
+        return draft(current.id());
+    }
+
+    synchronized Draft addDraftClip(String draftId, String entryId, boolean authenticated) throws Exception {
+        Draft current = draft(draftId);
+        Entry source = entry(entryId);
+        if (source.attachment() && !supportsAttachment(source.mime())) {
+            throw new Limit("草稿支援文字、網址與圖片。");
+        }
+        if ((current.sensitive() || source.sensitive()) && !authenticated) {
+            throw new Limit("請先驗證私密內容。");
+        }
+        ArrayList<Draft.Block> blocks = new ArrayList<>(current.blocks());
+        blocks.add(Draft.Block.fromClip(source));
+        Draft changed = current.withContent(current.title(), blocks);
+        return updateDraft(current, source.sensitive() ? changed.protect() : changed);
+    }
+
+    synchronized void deleteDraft(String id) throws Exception {
+        Draft current = draft(id);
+        ArrayList<Draft> next = new ArrayList<>(drafts);
+        next.remove(current);
+        commit(entries, retention, next);
+    }
+
+    synchronized byte[] draftImage(Draft draft, Draft.Block block) throws Exception {
+        if (!draft(draft.id()).equals(draft) || !block.image() || !draft.blocks().contains(block)) {
+            throw new Limit("草稿圖片已變更，請重新開啟。");
+        }
+        return decrypt(new AtomicFile(file(block.sourceId())).readFully(), block.sourceId());
+    }
+
     static boolean supportsAttachment(String mime) {
-        return mime != null && (mime.equals("application/pdf") || mime.matches("image/[a-z0-9.+_-]+"));
+        return mime != null && mime.matches("image/[a-z0-9.+_-]+");
     }
 
     private void insert(ArrayList<Entry> next, Entry entry) throws Exception {
@@ -237,6 +331,8 @@ final class Vault {
         if (entries != null) return;
         if (!folder.isDirectory() && !folder.mkdirs()) throw new IOException("Vault unavailable");
         ArrayList<Entry> loaded = new ArrayList<>();
+        ArrayList<Draft> loadedDrafts = new ArrayList<>();
+        HashSet<String> loadedReading = new HashSet<>();
         int days = 30;
         byte[] encrypted = null;
         try {
@@ -251,17 +347,31 @@ final class Vault {
                 days = state.getInt("retention");
                 JSONArray data = state.getJSONArray("entries");
                 for (int i = 0; i < data.length(); i++) loaded.add(Entry.fromJson(data.getJSONObject(i)));
+                JSONArray readingData = state.optJSONArray("reading");
+                if (readingData != null) {
+                    for (int i = 0; i < readingData.length(); i++) {
+                        loadedReading.add(readingData.getString(i));
+                    }
+                }
+                JSONArray draftData = state.optJSONArray("drafts");
+                if (draftData != null) {
+                    for (int i = 0; i < draftData.length(); i++) {
+                        loadedDrafts.add(Draft.fromJson(draftData.getJSONObject(i)));
+                    }
+                }
             } finally {
                 Arrays.fill(plain, (byte) 0);
             }
         }
         entries = loaded;
+        drafts = loadedDrafts;
+        reading = loadedReading;
         retention = days;
         removeOrphanFiles();
     }
 
     private boolean expired(Entry entry, int days) {
-        return days > 0 && !entry.pinned() && entry.savedAt() <= System.currentTimeMillis() - days * DAY;
+        return days > 0 && !entry.pinned() && !reading.contains(entry.id()) && entry.savedAt() <= System.currentTimeMillis() - days * DAY;
     }
 
     private ArrayList<Entry> unexpired(int days) {
@@ -276,9 +386,36 @@ final class Vault {
     }
 
     private void commit(ArrayList<Entry> next, int days) throws Exception {
+        commit(next, days, drafts, reading);
+    }
+
+    private void commit(ArrayList<Entry> next, int days, List<Draft> nextDrafts) throws Exception {
+        commit(next, days, nextDrafts, reading);
+    }
+
+    private void commit(ArrayList<Entry> next, int days, List<Draft> nextDrafts,
+                        Set<String> nextReading) throws Exception {
         JSONArray data = new JSONArray();
-        for (Entry entry : next) data.put(entry.toJson());
-        byte[] plain = new JSONObject().put("entries", data).put("retention", days)
+        JSONArray readingData = new JSONArray();
+        HashSet<String> keptReading = new HashSet<>();
+        HashSet<String> sensitiveIds = new HashSet<>();
+        for (Entry entry : next) {
+            data.put(entry.toJson());
+            if (entry.sensitive()) sensitiveIds.add(entry.id());
+            if (nextReading.contains(entry.id()) && entry.type().equals("連結")) {
+                keptReading.add(entry.id());
+                readingData.put(entry.id());
+            }
+        }
+        JSONArray draftData = new JSONArray();
+        ArrayList<Draft> protectedDrafts = new ArrayList<>(nextDrafts.size());
+        for (Draft draft : nextDrafts) {
+            boolean sensitiveSource = draft.blocks().stream().anyMatch(block -> sensitiveIds.contains(block.sourceId()));
+            Draft saved = sensitiveSource ? draft.protect() : draft;
+            protectedDrafts.add(saved);
+            draftData.put(saved.toJson());
+        }
+        byte[] plain = new JSONObject().put("entries", data).put("retention", days).put("drafts", draftData).put("reading", readingData)
                 .toString().getBytes(StandardCharsets.UTF_8);
         try {
             write(index, encrypt(plain, INDEX_PURPOSE));
@@ -286,19 +423,33 @@ final class Vault {
             Arrays.fill(plain, (byte) 0);
         }
         entries = next;
+        drafts = protectedDrafts;
+        reading = keptReading;
         retention = days;
         removeOrphanFiles();
+    }
+
+    private static HashMap<String, Integer> storedAttachments(List<Entry> entries, List<Draft> drafts) {
+        HashMap<String, Integer> retained = new HashMap<>();
+        for (Entry entry : entries) {
+            if (entry.attachment()) retained.put(entry.id(), entry.bytes());
+        }
+        for (Draft draft : drafts) {
+            for (Draft.Block block : draft.blocks()) {
+                if (block.image()) retained.put(block.sourceId(), block.bytes());
+            }
+        }
+        return retained;
     }
 
     private void removeOrphanFiles() {
         File[] blobs = folder.listFiles((dir, name) -> name.endsWith(".blob")
                 || name.endsWith(".blob.new") || name.endsWith(".blob.bak"));
-        if (blobs == null) return;
+        if (blobs == null || blobs.length == 0) return;
+        HashMap<String, Integer> retained = storedAttachments(entries, drafts);
         for (File blob : blobs) {
             String id = blob.getName().substring(0, blob.getName().indexOf('.'));
-            if (entries.stream().noneMatch(entry -> entry.attachment() && entry.id().equals(id))) {
-                blob.delete();
-            }
+            if (!retained.containsKey(id)) blob.delete();
         }
     }
 
