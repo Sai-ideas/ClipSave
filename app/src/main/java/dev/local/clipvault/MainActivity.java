@@ -433,7 +433,8 @@ public final class MainActivity extends Activity {
         heading.addView(details, detailsLayout);
         card.addView(heading);
 
-        TextView content = text(entry.sensitive() ? "私密剪輯" : entry.content(), 17, ink, true);
+        TextView content = text(entry.sensitive() ? "****" : entry.content(), 17, ink, true);
+        if (entry.sensitive()) content.setContentDescription("私密剪輯，內容已隱藏");
         content.setMaxLines(3);
         content.setEllipsize(TextUtils.TruncateAt.END);
         card.addView(content, margins(-1, -2, 10, 9));
@@ -776,8 +777,14 @@ public final class MainActivity extends Activity {
             options.add("開啟網址");
             options.add(waiting ? "標為已讀" : "加入待讀");
         }
+        int privacyOption = options.size();
+        if (!entry.sensitive()) options.add("設為私密");
         show(new AlertDialog.Builder(this).setTitle("剪輯選項")
                 .setItems(options.toArray(new String[0]), (d, which) -> {
+                    if (which == privacyOption) {
+                        protectEntry(entry);
+                        return;
+                    }
                     switch (which) {
                         case 0 -> authorize(entry, "編輯私密剪輯設定", this::editOptions);
                         case 1 -> share(entry);
@@ -794,6 +801,18 @@ public final class MainActivity extends Activity {
                 }));
     }
 
+    private void protectEntry(Vault.Entry entry) {
+        confirm("設為私密", "這筆剪輯和已加入拼報的副本都會受到保護。設為私密後無法轉回一般剪輯。",
+                "設為私密", () -> mutate(() -> {
+                    if (entry.attachment()) {
+                        revokeUriPermission(AttachmentProvider.uri(this, entry.id()),
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    }
+                    vault.protectEntry(entry.id());
+                    return null;
+                }, "已設為私密"));
+    }
+
     void openLink(String value) {
         if (!Vault.isWebLink(value)) return;
         try {
@@ -807,23 +826,18 @@ public final class MainActivity extends Activity {
         LinearLayout body = dialogBody();
         CheckBox pin = checkbox("置頂並保留到手動刪除", entry.pinned());
         CheckBox star = checkbox("加入收藏", entry.starred());
-        CheckBox mask = checkbox("標為私密", entry.sensitive());
         EditText tag = edit("自訂標籤", 40, false);
         tag.setText(entry.tag());
         body.addView(pin);
         body.addView(star);
-        body.addView(mask);
         body.addView(tag);
         show(new AlertDialog.Builder(this).setTitle("整理剪輯").setView(body)
                 .setNegativeButton("取消", null).setPositiveButton("儲存", (d, which) -> {
-                    Vault.Entry updated = entry.withOptions(pin.isChecked(), star.isChecked(),
-                            mask.isChecked(), tag.getText().toString().trim());
+                    boolean pinned = pin.isChecked();
+                    boolean starred = star.isChecked();
+                    String label = tag.getText().toString().trim();
                     mutate(() -> {
-                        if (entry.attachment() && updated.sensitive() && !entry.sensitive()) {
-                            revokeUriPermission(AttachmentProvider.uri(this, entry.id()),
-                                    Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                        }
-                        vault.update(updated);
+                        vault.updateOptions(entry.id(), pinned, starred, label);
                         return null;
                     }, "已更新");
                 }));

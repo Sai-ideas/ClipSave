@@ -19,7 +19,9 @@ final class Checklist {
             String text = line.trim();
             Matcher marker = MARKER.matcher(text);
             boolean checked = false;
-            if (marker.matches()) {
+            if (text.startsWith("\\") && MARKER.matcher(text.substring(1)).matches()) {
+                text = text.substring(1);
+            } else if (marker.matches()) {
                 checked = !marker.group(1).equals(" ");
                 text = marker.group(2) == null ? "" : marker.group(2).trim();
             }

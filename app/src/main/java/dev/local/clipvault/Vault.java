@@ -52,8 +52,12 @@ final class Vault {
             return isWebLink(content) ? "連結" : "文字";
         }
 
-        Entry withOptions(boolean pin, boolean star, boolean mask, String label) {
-            return new Entry(id, mime, content, savedAt, bytes, pin, star, mask, label);
+        Entry withOptions(boolean pin, boolean star, String label) {
+            return new Entry(id, mime, content, savedAt, bytes, pin, star, sensitive, label);
+        }
+
+        Entry protect() {
+            return new Entry(id, mime, content, savedAt, bytes, pinned, starred, true, tag);
         }
 
         JSONObject toJson() throws Exception {
@@ -191,8 +195,17 @@ final class Vault {
         return entry;
     }
 
-    synchronized void update(Entry entry) throws Exception {
-        load();
+    synchronized void updateOptions(String id, boolean pin, boolean star, String tag) throws Exception {
+        Entry current = entry(id);
+        update(current.withOptions(pin, star, tag));
+    }
+
+    synchronized void protectEntry(String id) throws Exception {
+        Entry current = entry(id);
+        if (!current.sensitive()) update(current.protect());
+    }
+
+    private void update(Entry entry) throws Exception {
         prune();
         ArrayList<Entry> next = new ArrayList<>(entries);
         for (int i = 0; i < next.size(); i++) {
@@ -283,7 +296,7 @@ final class Vault {
         }
         if (size > MAX_DRAFT_TEXT) throw new Limit("拼報總文字量已達上限。");
         ArrayList<Draft> next = new ArrayList<>(drafts);
-        next.set(next.indexOf(current), current.sensitive() ? changed.protect() : changed);
+        next.set(next.indexOf(current), changed);
         commit(entries, retention, next);
         return draft(current.id());
     }
@@ -318,8 +331,7 @@ final class Vault {
             }
             blocks.add(Draft.Block.fromClip(source));
         }
-        Draft changed = current.withContent(current.title(), blocks);
-        return updateDraft(current, sensitive ? changed.protect() : changed);
+        return updateDraft(current, current.withContent(current.title(), blocks));
     }
 
     synchronized void deleteDraft(Draft confirmed) throws Exception {
@@ -430,8 +442,7 @@ final class Vault {
         JSONArray draftData = new JSONArray();
         ArrayList<Draft> protectedDrafts = new ArrayList<>(nextDrafts.size());
         for (Draft draft : nextDrafts) {
-            boolean sensitiveSource = draft.blocks().stream().anyMatch(block -> sensitiveIds.contains(block.sourceId()));
-            Draft saved = sensitiveSource ? draft.protect() : draft;
+            Draft saved = draft.protectSources(sensitiveIds);
             protectedDrafts.add(saved);
             draftData.put(saved.toJson());
         }
