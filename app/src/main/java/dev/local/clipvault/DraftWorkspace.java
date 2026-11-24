@@ -4,9 +4,10 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.text.TextUtils;
-import android.view.DragEvent;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
@@ -38,7 +39,6 @@ final class DraftWorkspace {
     private Export export;
     private LinearLayout page;
     private record Export(String id, long updatedAt, boolean sensitive, Uri location) {}
-    private record Drag(String draftId, int origin) {}
     private record DeleteTarget(Draft draft, List<Draft> shelf) {}
 
     DraftWorkspace(MainActivity activity, Vault vault) {
@@ -214,15 +214,16 @@ final class DraftWorkspace {
 
         LinearLayout authoring = activity.row();
         addAction(authoring, "插入剪輯", () -> pickClip(draft));
-        addAction(authoring, "新增段落", () -> addTextBlock(draft, Draft.Block.PARAGRAPH));
-        addAction(authoring, "新增小標", () -> addTextBlock(draft, Draft.Block.HEADING));
+        addAction(authoring, "新增區塊", () -> chooseBlockKind(draft));
         add(authoring, 10);
 
+        DraftReorder reorder = new DraftReorder((ScrollView) page.getParent(), activity::canAct,
+                (from, to) -> moveBlock(draft, from, to), activity.dp(60), activity.dp(9));
         if (draft.blocks().isEmpty()) {
             add(activity.text("插入素材或寫一段文字開始。", 15, muted, false), 16);
         } else {
             for (int index = 0; index < draft.blocks().size(); index++) {
-                add(blockCard(draft, index), 10);
+                add(blockCard(draft, index, reorder), 10);
             }
         }
         LinearLayout output = activity.row();
@@ -236,59 +237,83 @@ final class DraftWorkspace {
         }
     }
 
-    private LinearLayout blockCard(Draft draft, int index) {
+    private LinearLayout blockCard(Draft draft, int index, DraftReorder reorder) {
         Draft.Block block = draft.blocks().get(index);
         LinearLayout item = panel();
-        String label = block.image() ? "圖片" : block.mime().equals(Draft.Block.HEADING) ? "小標"
-                : Vault.isWebLink(block.content()) ? "網址" : "段落";
+        Draft.Block.Kind kind = block.kind();
+        String label = block.image() ? "圖片" : kind == Draft.Block.Kind.TEXT
+                && Vault.isWebLink(block.content()) ? "網址" : kind.label;
         item.addView(activity.text(label, 13, accent, true));
-        TextView contents = activity.text(block.content(), 16, ink, false);
-        contents.setMaxLines(4);
-        contents.setEllipsize(TextUtils.TruncateAt.END);
-        item.addView(contents, activity.margins(-1, -2, 5, 4));
+        View content = block.image() ? activity.text(block.content(), 16, ink, false) : textBlock(block);
+        if (content instanceof TextView text) {
+            text.setMaxLines(4);
+            text.setEllipsize(TextUtils.TruncateAt.END);
+        }
+        item.addView(content, activity.margins(-1, -2, 5, 4));
 
         LinearLayout actions = activity.row();
-        if (!block.image()) addAction(actions, "編輯", () -> editBlock(draft, index));
-        Button order = addAction(actions, "排序", () -> blockOrder(draft, index));
-        order.setOnLongClickListener(view -> activity.canAct() && draft.blocks().size() > 1
-                && view.startDragAndDrop(null, new View.DragShadowBuilder(view),
-                new Drag(draft.id(), index), 0));
+        if (!block.image() && kind != Draft.Block.Kind.DIVIDER) {
+            addAction(actions, "編輯", () -> editBlock(draft, index));
+        }
+        Button handle = addAction(actions, "排序", () -> blockOrder(draft, index));
+        Drawable icon = activity.getDrawable(R.drawable.ic_reorder).mutate();
+        icon.setTint(accent);
+        handle.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, null, null, null);
+        handle.setCompoundDrawablePadding(activity.dp(2));
+        handle.setContentDescription("排序，拖曳可移動區塊，點按可上移或下移");
+        reorder.addCard(item, handle);
         addAction(actions, "移除", () -> removeBlock(draft, index));
         item.addView(actions);
-        item.setOnDragListener((view, event) -> {
-            if (!(event.getLocalState() instanceof Drag drag) || !drag.draftId().equals(draft.id())) {
-                return false;
-            }
-            switch (event.getAction()) {
-                case DragEvent.ACTION_DRAG_ENTERED -> item.setAlpha(0.65f);
-                case DragEvent.ACTION_DRAG_EXITED, DragEvent.ACTION_DRAG_ENDED -> item.setAlpha(1f);
-                case DragEvent.ACTION_DROP -> {
-                    if (drag.origin() != index) moveBlock(draft, drag.origin(), index);
-                }
-                default -> {}
-            }
-            return true;
-        });
         return item;
     }
 
-    private void addTextBlock(Draft draft, String mime) {
-        boolean heading = Draft.Block.HEADING.equals(mime);
-        editText(heading ? "新增小標" : "新增段落", "輸入內容", "", Vault.MAX_TEXT, !heading, text -> {
+    private void chooseBlockKind(Draft draft) {
+        Draft.Block.Kind[] kinds = Draft.Block.Kind.values();
+        String[] labels = new String[kinds.length];
+        for (int index = 0; index < kinds.length; index++) labels[index] = kinds[index].label;
+        activity.show(new AlertDialog.Builder(activity).setTitle("新增區塊")
+                .setItems(labels, (dialog, which) -> addBlock(draft, kinds[which]))
+                .setNegativeButton("取消", null));
+    }
+
+    private void addBlock(Draft draft, Draft.Block.Kind kind) {
+        Consumer<String> save = text -> {
             ArrayList<Draft.Block> blocks = new ArrayList<>(draft.blocks());
-            blocks.add(Draft.Block.text(mime, text));
+            blocks.add(Draft.Block.text(kind.mime, text));
             update(draft, draft.title(), blocks);
-        });
+        };
+        if (kind == Draft.Block.Kind.DIVIDER) save.accept("");
+        else editText(kind.label, kind.hint, "", Vault.MAX_TEXT, kind.multiline, save);
     }
 
     private void editBlock(Draft draft, int index) {
         Draft.Block block = draft.blocks().get(index);
-        editText("編輯區塊", "輸入內容", block.content(), Vault.MAX_TEXT,
-                !block.mime().equals(Draft.Block.HEADING), text -> {
-                    ArrayList<Draft.Block> blocks = new ArrayList<>(draft.blocks());
-                    blocks.set(index, block.withContent(text));
-                    update(draft, draft.title(), blocks);
-                });
+        Draft.Block.Kind kind = block.kind();
+        editText("編輯區塊", kind.hint, block.content(), Vault.MAX_TEXT, kind.multiline, text -> {
+            ArrayList<Draft.Block> blocks = new ArrayList<>(draft.blocks());
+            blocks.set(index, block.withContent(text));
+            update(draft, draft.title(), blocks);
+        });
+    }
+
+    private View textBlock(Draft.Block block) {
+        Draft.Block.Kind kind = block.kind();
+        if (kind == Draft.Block.Kind.DIVIDER) {
+            View line = new View(activity);
+            line.setMinimumHeight(activity.dp(2));
+            line.setBackgroundColor(muted);
+            line.setContentDescription("分隔線");
+            return line;
+        }
+        boolean heading = kind == Draft.Block.Kind.SUBHEADING || kind == Draft.Block.Kind.TITLE;
+        TextView text = activity.text(Article.formatText(block, false),
+                kind == Draft.Block.Kind.TITLE ? 22 : heading ? 19 : 16, ink, heading);
+        if (kind == Draft.Block.Kind.CODE) text.setTypeface(Typeface.MONOSPACE);
+        if (kind == Draft.Block.Kind.QUOTE || kind == Draft.Block.Kind.CODE) {
+            text.setBackgroundColor(surfaceSoft);
+            text.setPadding(activity.dp(9), activity.dp(6), activity.dp(9), activity.dp(6));
+        }
+        return text;
     }
 
     private void blockOrder(Draft draft, int index) {
@@ -388,9 +413,8 @@ final class DraftWorkspace {
                     view.setContentDescription("草稿圖片");
                     body.addView(view, activity.margins(-1, -2, 12, 0));
                 } else {
-                    boolean heading = Draft.Block.HEADING.equals(block.mime());
-                    body.addView(activity.text(block.content(), heading ? 19 : 16, ink, heading),
-                            activity.margins(-1, -2, 12, 0));
+                    View text = block.image() ? activity.text(block.content(), 16, ink, false) : textBlock(block);
+                    body.addView(text, activity.margins(-1, -2, 12, 0));
                 }
             }
             activity.show(new AlertDialog.Builder(activity).setTitle("文章預覽").setView(scroll)

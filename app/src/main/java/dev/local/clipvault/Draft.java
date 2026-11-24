@@ -49,6 +49,29 @@ record Draft(String id, String title, List<Block> blocks, long updatedAt, boolea
         static final String PARAGRAPH = "text/plain";
         static final String HEADING = "text/heading";
 
+        enum Kind {
+            TEXT(PARAGRAPH, "一般段落", "輸入段落", true),
+            SUBHEADING(HEADING, "小標（##）", "輸入小標", false),
+            TITLE("text/setext", "標題（===）", "輸入標題", false),
+            QUOTE("text/quote", "引用", "輸入引用文字", true),
+            BULLETS("text/bullets", "項目清單", "每行輸入一個項目", true),
+            NUMBERED("text/numbered", "編號清單", "每行輸入一個項目", true),
+            CODE("text/code", "程式碼區塊", "輸入程式碼", true),
+            DIVIDER("text/divider", "分隔線（---）", "", false);
+
+            final String mime;
+            final String label;
+            final String hint;
+            final boolean multiline;
+
+            Kind(String mime, String label, String hint, boolean multiline) {
+                this.mime = mime;
+                this.label = label;
+                this.hint = hint;
+                this.multiline = multiline;
+            }
+        }
+
         static Block text(String mime, String content) {
             return new Block(UUID.randomUUID().toString(), "", mime, content, 0);
         }
@@ -59,6 +82,13 @@ record Draft(String id, String title, List<Block> blocks, long updatedAt, boolea
         }
 
         boolean image() { return mime.startsWith("image/"); }
+
+        Kind kind() {
+            for (Kind kind : Kind.values()) {
+                if (kind.mime.equals(mime)) return kind;
+            }
+            return Kind.TEXT;
+        }
 
         Block withContent(String value) {
             return new Block(id, sourceId, mime, value, bytes);
