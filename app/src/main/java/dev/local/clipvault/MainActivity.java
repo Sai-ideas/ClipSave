@@ -1048,10 +1048,14 @@ public final class MainActivity extends Activity {
     }
 
     <T> void runForeground(Callable<T> operation, Consumer<T> done) {
+        runForeground(operation, done, null);
+    }
+
+    <T> void runForeground(Callable<T> operation, Consumer<T> done, Runnable failure) {
         int visibleVersion = foregroundVersion;
         run(operation, result -> {
             if (resumed && visibleVersion == foregroundVersion) done.accept(result);
-        }, null);
+        }, failure);
     }
 
     <T> void run(Callable<T> operation, Consumer<T> done, Runnable failure) {
@@ -1133,7 +1137,7 @@ public final class MainActivity extends Activity {
         return input;
     }
 
-    private CheckBox checkbox(String label, boolean checked) {
+    CheckBox checkbox(String label, boolean checked) {
         CheckBox check = new CheckBox(this);
         check.setText(label);
         check.setChecked(checked);

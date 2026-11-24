@@ -55,6 +55,7 @@ record Draft(String id, String title, List<Block> blocks, long updatedAt, boolea
             TITLE("text/setext", "標題（===）", "輸入標題", false),
             QUOTE("text/quote", "引用", "輸入引用文字", true),
             BULLETS("text/bullets", "項目清單", "每行輸入一個項目", true),
+            CHECKLIST("text/checklist", "待辦清單", "每行輸入一個待辦項目", true),
             NUMBERED("text/numbered", "編號清單", "每行輸入一個項目", true),
             CODE("text/code", "程式碼區塊", "輸入程式碼", true),
             DIVIDER("text/divider", "分隔線（---）", "", false);

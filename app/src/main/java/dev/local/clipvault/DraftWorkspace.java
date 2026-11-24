@@ -11,6 +11,7 @@ import android.text.TextUtils;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -26,6 +27,7 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 final class DraftWorkspace {
     static final int EXPORT_REQUEST = 14;
@@ -244,7 +246,10 @@ final class DraftWorkspace {
         String label = block.image() ? "圖片" : kind == Draft.Block.Kind.TEXT
                 && Vault.isWebLink(block.content()) ? "網址" : kind.label;
         item.addView(activity.text(label, 13, accent, true));
-        View content = block.image() ? activity.text(block.content(), 16, ink, false) : textBlock(block);
+        View content;
+        if (block.image()) content = activity.text(block.content(), 16, ink, false);
+        else if (kind == Draft.Block.Kind.CHECKLIST) content = checklistBlock(draft, index);
+        else content = textBlock(block);
         if (content instanceof TextView text) {
             text.setMaxLines(4);
             text.setEllipsize(TextUtils.TruncateAt.END);
@@ -287,17 +292,55 @@ final class DraftWorkspace {
             update(draft, draft.title(), blocks);
         };
         if (kind == Draft.Block.Kind.DIVIDER) save.accept("");
-        else editText(kind.label, kind.hint, "", Vault.MAX_TEXT, kind.multiline, save);
+        else editBlockText(kind.label, kind, "", save);
     }
 
     private void editBlock(Draft draft, int index) {
         Draft.Block block = draft.blocks().get(index);
         Draft.Block.Kind kind = block.kind();
-        editText("編輯區塊", kind.hint, block.content(), Vault.MAX_TEXT, kind.multiline, text -> {
-            ArrayList<Draft.Block> blocks = new ArrayList<>(draft.blocks());
-            blocks.set(index, block.withContent(text));
-            update(draft, draft.title(), blocks);
-        });
+        editBlockText("編輯區塊", kind, block.content(), text -> replaceBlock(draft, index, text));
+    }
+
+    private void editBlockText(String title, Draft.Block.Kind kind, String content, Consumer<String> save) {
+        if (kind == Draft.Block.Kind.CHECKLIST) {
+            editText("待辦清單", kind.hint, content, Vault.MAX_TEXT, true, Checklist::normalize, save);
+        } else {
+            editText(title, kind.hint, content, Vault.MAX_TEXT, kind.multiline, save);
+        }
+    }
+
+    private View checklistBlock(Draft draft, int index) {
+        LinearLayout list = activity.column();
+        List<Checklist.Item> items = Checklist.items(draft.blocks().get(index).content());
+        for (int position = 0; position < items.size(); position++) {
+            int itemIndex = position;
+            Checklist.Item item = items.get(position);
+            CheckBox box = activity.checkbox(item.text(), item.checked());
+            box.setTextColor(ink);
+            box.setTextSize(16);
+            box.setOnClickListener(view -> {
+                if (!activity.canAct()) {
+                    box.setChecked(item.checked());
+                    return;
+                }
+                ArrayList<Checklist.Item> changed = new ArrayList<>(items);
+                changed.set(itemIndex, new Checklist.Item(item.text(), box.isChecked()));
+                replaceBlock(draft, index, Checklist.render(changed, true), () -> box.setChecked(item.checked()));
+            });
+            list.addView(box, new LinearLayout.LayoutParams(-1, -2));
+        }
+        return list;
+    }
+
+    private void replaceBlock(Draft draft, int index, String content) {
+        replaceBlock(draft, index, content, null);
+    }
+
+    private void replaceBlock(Draft draft, int index, String content, Runnable failure) {
+        ArrayList<Draft.Block> blocks = new ArrayList<>(draft.blocks());
+        blocks.set(index, blocks.get(index).withContent(content));
+        activity.runForeground(() -> vault.updateDraft(draft, draft.withContent(draft.title(), blocks)),
+                this::renderDraft, failure);
     }
 
     private View textBlock(Draft.Block block) {
@@ -494,6 +537,11 @@ final class DraftWorkspace {
 
     private void editText(String title, String hint, String value, int limit, boolean multiline,
                           Consumer<String> done) {
+        editText(title, hint, value, limit, multiline, Function.identity(), done);
+    }
+
+    private void editText(String title, String hint, String value, int limit, boolean multiline,
+                          Function<String, String> prepare, Consumer<String> done) {
         if (!activity.canAct()) return;
         LinearLayout body = activity.dialogBody();
         EditText input = activity.edit(hint, limit, multiline);
@@ -508,7 +556,14 @@ final class DraftWorkspace {
                 input.setError("請輸入文字");
                 return;
             }
-            done.accept(multiline ? text : text.trim());
+            String prepared;
+            try {
+                prepared = prepare.apply(multiline ? text : text.trim());
+            } catch (IllegalArgumentException error) {
+                input.setError(error.getMessage());
+                return;
+            }
+            done.accept(prepared);
         });
     }
 

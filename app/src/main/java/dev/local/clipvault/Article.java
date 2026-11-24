@@ -38,6 +38,7 @@ final class Article {
             case TITLE -> markdown ? setextHeading(content) : content;
             case DIVIDER -> "---";
             case QUOTE, BULLETS, NUMBERED -> formatLines(content, kind, markdown);
+            case CHECKLIST -> Checklist.render(Checklist.items(content), markdown);
             case CODE -> markdown ? fencedCode(content) : content;
             case TEXT -> markdown && Vault.isWebLink(content) ? "<" + content.trim() + ">" : content;
         };
