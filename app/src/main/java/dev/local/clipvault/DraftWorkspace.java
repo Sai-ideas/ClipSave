@@ -8,10 +8,12 @@ import android.net.Uri;
 import android.text.TextUtils;
 import android.view.DragEvent;
 import android.view.View;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -20,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.function.Consumer;
 
@@ -123,12 +126,17 @@ final class DraftWorkspace {
             }
             activity.show(new AlertDialog.Builder(activity).setTitle("加入草稿")
                     .setItems(drafts.stream().map(DraftWorkspace::displayName).toArray(String[]::new),
-                            (dialog, which) -> insert(drafts.get(which), entry))
+                            (dialog, which) -> insert(drafts.get(which), Collections.singletonList(entry)))
                     .setNegativeButton("取消", null));
         });
     }
 
     private void pickClip(Draft draft) {
+        int remaining = Draft.MAX_BLOCKS - draft.blocks().size();
+        if (remaining <= 0) {
+            activity.toast("每篇草稿最多 " + Draft.MAX_BLOCKS + " 個區塊。");
+            return;
+        }
         activity.runForeground(vault::list, entries -> {
             ArrayList<Vault.Entry> available = new ArrayList<>();
             for (Vault.Entry entry : entries) {
@@ -138,17 +146,57 @@ final class DraftWorkspace {
                 activity.toast("先收錄文字、網址或圖片，再插入草稿。");
                 return;
             }
-            String[] labels = available.stream().map(DraftWorkspace::clipLabel).toArray(String[]::new);
-            activity.show(new AlertDialog.Builder(activity).setTitle("插入剪輯")
-                    .setItems(labels, (dialog, which) -> insert(draft, available.get(which)))
-                    .setNegativeButton("取消", null));
+            showClipSelection(draft, available, remaining);
         });
     }
 
-    private void insert(Draft draft, Vault.Entry entry) {
-        boolean sensitive = draft.sensitive() || entry.sensitive();
+    private void showClipSelection(Draft draft, List<Vault.Entry> available, int remaining) {
+        ArrayList<String> labels = new ArrayList<>(available.size());
+        for (Vault.Entry entry : available) labels.add(clipLabel(entry));
+        ArrayList<String> rows = new ArrayList<>(labels);
+        LinkedHashSet<Integer> selection = new LinkedHashSet<>();
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(activity,
+                android.R.layout.simple_list_item_multiple_choice, rows);
+        AlertDialog dialog = activity.show(new AlertDialog.Builder(activity)
+                .setTitle("插入剪輯")
+                .setAdapter(adapter, null)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("插入 0 筆", null));
+        ListView list = dialog.getListView();
+        list.setChoiceMode(ListView.CHOICE_MODE_MULTIPLE);
+        Button confirm = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        confirm.setEnabled(false);
+        list.setOnItemClickListener((parent, row, position, id) -> {
+            if (list.isItemChecked(position)) selection.add(position);
+            else selection.remove(position);
+
+            for (int index = 0; index < labels.size(); index++) rows.set(index, labels.get(index));
+            int order = 1;
+            for (int selected : selection) {
+                rows.set(selected, order++ + ". " + labels.get(selected));
+            }
+            adapter.notifyDataSetChanged();
+
+            int count = selection.size();
+            dialog.setTitle(count > remaining ? "最多可插入 " + remaining + " 筆" : "插入剪輯");
+            confirm.setText("插入 " + count + " 筆");
+            confirm.setEnabled(count > 0 && count <= remaining);
+        });
+        confirm.setOnClickListener(view -> {
+            if (!activity.canAct() || !confirm.isEnabled()) return;
+            ArrayList<Vault.Entry> selected = new ArrayList<>(selection.size());
+            for (int index : selection) selected.add(available.get(index));
+            dialog.dismiss();
+            insert(draft, selected);
+        });
+    }
+
+    private void insert(Draft draft, List<Vault.Entry> selected) {
+        boolean sensitive = draft.sensitive() || selected.stream().anyMatch(Vault.Entry::sensitive);
+        ArrayList<String> ids = new ArrayList<>(selected.size());
+        for (Vault.Entry entry : selected) ids.add(entry.id());
         activity.authorize(sensitive, "插入私密剪輯", () -> activity.runForeground(
-                () -> vault.addDraftClip(draft.id(), entry.id(), sensitive), this::renderDraft));
+                () -> vault.addDraftClips(draft.id(), ids, sensitive), this::renderDraft));
     }
 
     private void renderDraft(Draft draft) {

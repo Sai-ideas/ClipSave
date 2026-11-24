@@ -288,19 +288,38 @@ final class Vault {
         return draft(current.id());
     }
 
-    synchronized Draft addDraftClip(String draftId, String entryId, boolean authenticated) throws Exception {
+    synchronized Draft addDraftClips(String draftId, List<String> entryIds, boolean authenticated) throws Exception {
         Draft current = draft(draftId);
-        Entry source = entry(entryId);
-        if (source.attachment() && !supportsAttachment(source.mime())) {
-            throw new Limit("草稿支援文字、網址與圖片。");
+        if (entryIds.isEmpty()) return current;
+        if (entryIds.size() > Draft.MAX_BLOCKS - current.blocks().size()) {
+            throw new Limit("每篇草稿最多 " + Draft.MAX_BLOCKS + " 個區塊。");
         }
-        if ((current.sensitive() || source.sensitive()) && !authenticated) {
+        ArrayList<Entry> sources = new ArrayList<>(entryIds.size());
+        boolean sensitive = current.sensitive();
+        for (String id : entryIds) {
+            Entry source = entry(id);
+            if (source.attachment() && !supportsAttachment(source.mime())) {
+                throw new Limit("草稿支援文字、網址與圖片。");
+            }
+            sources.add(source);
+            sensitive |= source.sensitive();
+        }
+        if (sensitive && !authenticated) {
             throw new Limit("請先驗證私密內容。");
         }
         ArrayList<Draft.Block> blocks = new ArrayList<>(current.blocks());
-        blocks.add(Draft.Block.fromClip(source));
+        for (Entry source : sources) {
+            if (source.attachment()) {
+                try {
+                    Arrays.fill(attachmentData(source.id()), (byte) 0);
+                } catch (Exception error) {
+                    throw new Limit("有選取的圖片無法讀取，草稿保持原樣。");
+                }
+            }
+            blocks.add(Draft.Block.fromClip(source));
+        }
         Draft changed = current.withContent(current.title(), blocks);
-        return updateDraft(current, source.sensitive() ? changed.protect() : changed);
+        return updateDraft(current, sensitive ? changed.protect() : changed);
     }
 
     synchronized void deleteDraft(Draft confirmed) throws Exception {
