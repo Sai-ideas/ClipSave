@@ -10,6 +10,7 @@ import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewConfiguration;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ScrollView;
@@ -173,6 +174,7 @@ public final class PinbaoRegression extends Instrumentation {
     private void workspace(Vault vault, String marker) throws Exception {
         String name = "串聯驗收 " + marker.substring(0, 8);
         String longText = "第一行\n第二行\n第三行\n第四行\n第五行";
+        String wrappedText = String.join(" ", java.util.Collections.nCopies(80, "自動換行"));
         Draft draft = vault.createDraft(name);
         MainActivity ui = null;
         try {
@@ -181,6 +183,7 @@ public final class PinbaoRegression extends Instrumentation {
                 blocks.add(Draft.Block.text(Draft.Block.PARAGRAPH, "排序項目 " + index));
             }
             blocks.add(Draft.Block.text(Draft.Block.PARAGRAPH, longText));
+            blocks.add(Draft.Block.text(Draft.Block.PARAGRAPH, wrappedText));
             blocks.add(Draft.Block.text(Draft.Block.Kind.DIVIDER.mime, ""));
             vault.updateDraft(draft, draft.withContent(name, blocks));
             ui = (MainActivity) startActivitySync(new Intent(getTargetContext(), MainActivity.class)
@@ -198,16 +201,30 @@ public final class PinbaoRegression extends Instrumentation {
                     "export stays in sticky toolbar");
             runOnMainSync(() -> content.scrollTo(0, 0));
 
-            onMain(() -> action(activity, "隱藏編輯").performClick());
-            await(() -> onMain(() -> action(activity, "顯示編輯") != null && activity.canAct()), "reading mode");
+            await(() -> onMain(() -> cardAction(activity, longText, "展開內文").isShown()
+                    && cardAction(activity, wrappedText, "展開內文").isShown()), "triangle for hard and soft wrapping");
+            check(onMain(() -> ((Button) cardAction(activity, longText, "展開內文")).getText().equals("▸")),
+                    "collapsed triangle points right");
+            onMain(() -> cardAction(activity, longText, "展開內文").performClick());
+            await(() -> onMain(() -> activity.canAct() && ((Button) cardAction(activity, longText,
+                    "摺疊內文")).getText().equals("▾")), "expanded triangle points down");
+            onMain(() -> cardAction(activity, longText, "摺疊內文").performClick());
+            await(() -> onMain(() -> activity.canAct() && cardAction(activity, longText, "展開內文").isShown()),
+                    "collapse with triangle");
+
+            List<Point> toolbarPositions = onMain(() -> toolbarPositions(activity, "切換為精簡模式"));
+            onMain(() -> action(activity, "切換為精簡模式").performClick());
+            await(() -> onMain(() -> action(activity, "切換為詳細模式") != null && activity.canAct()), "compact mode");
             check(onMain(() -> named(root(activity), "排序項目 2") != null && card(activity, 2).getBackground() != null
-                    && button(root(activity), "排序") == null && action(activity, "預覽全文") != null),
-                    "reading mode retains card surface and output actions");
+                    && action(activity, "卡片選項") == null && action(activity, "預覽全文") != null),
+                    "compact mode retains card surface, hides card headers and preserves output actions");
+            await(() -> onMain(() -> toolbarPositions.equals(toolbarPositions(activity, "切換為詳細模式"))),
+                    "every main toolbar control keeps its position");
             await(() -> onMain(() -> action(activity, "分隔線").getHeight() > 0), "divider laid out");
             check(onMain(() -> action(activity, "分隔線").getHeight() <= activity.dp(2)), "divider is a thin line");
-            await(() -> onMain(() -> cardAction(activity, longText, "展開內文").isShown()), "long card fold action");
+            await(() -> onMain(() -> body(activity, longText).isClickable()), "compact body offers expand");
             check(onMain(() -> ((TextView) named(root(activity), longText)).getMaxLines() == 3), "three line fold");
-            onMain(() -> cardAction(activity, longText, "展開內文").performClick());
+            onMain(() -> body(activity, longText).performClick());
             await(() -> onMain(() -> activity.canAct()
                     && ((TextView) named(root(activity), longText)).getMaxLines() > 3), "full card");
 
@@ -219,15 +236,22 @@ public final class PinbaoRegression extends Instrumentation {
             await(() -> onMain(() -> activity.canAct() && button(root(activity), "新增文字") != null), "clips");
             check(onMain(() -> navigation.equals(center(action(activity, "剪輯")))), "fixed bottom location");
             onMain(() -> action(activity, "拼報").performClick());
-            await(() -> onMain(() -> action(activity, "顯示編輯") != null && activity.canAct()
+            await(() -> onMain(() -> action(activity, "切換為詳細模式") != null && activity.canAct()
                     && ((ScrollView) find(root(activity), v -> v instanceof ScrollView)).getScrollY() == offset),
                     "return to draft and restore reading position");
-            onMain(() -> action(activity, "顯示編輯").performClick());
-            await(() -> onMain(() -> button(root(activity), "排序") != null), "editing restored");
+            onMain(() -> action(activity, "切換為詳細模式").performClick());
+            await(() -> onMain(() -> dragHandle(activity, 0) != null), "detail restored");
             runOnMainSync(() -> ((ScrollView) find(root(activity), v -> v instanceof ScrollView)).scrollTo(0, 0));
 
-            onMain(() -> card(activity, 0).performLongClick());
-            onMain(() -> card(activity, 2).performClick());
+            onMain(() -> cardAction(activity, "排序項目 0", "卡片選項").performClick());
+            runOnMainSync(() -> {
+                AlertDialog options = dialog(activity);
+                check("編輯".equals(options.getListView().getItemAtPosition(0))
+                        && "刪除".equals(options.getListView().getItemAtPosition(1)), "card menu");
+                options.dismiss();
+            });
+            longPress(onMain(() -> center(body(activity, "排序項目 0"))));
+            onMain(() -> body(activity, "排序項目 2").performClick());
             check(onMain(() -> named(root(activity), "已選 2 張") != null), "selection count");
             onMain(() -> action(activity, "串聯選取卡片").performClick());
             runOnMainSync(() -> {
@@ -239,7 +263,7 @@ public final class PinbaoRegression extends Instrumentation {
             await(() -> storedOrder(vault, draft.id(), blocks.get(0), blocks.get(2))
                     && onMain(() -> activity.canAct()
                     && action(activity, "串聯選項 驗收串聯") != null), "group created");
-            onMain(() -> action(activity, "折疊串聯 驗收串聯").performClick());
+            onMain(() -> action(activity, "摺疊串聯 驗收串聯").performClick());
             await(() -> onMain(() -> activity.canAct() && named(root(activity), "排序項目 2") == null), "group folded");
             Point heading = onMain(() -> center(action(activity, "排序串聯 驗收串聯，拖曳可移動整組")));
             Point after = onMain(() -> lowerPart(card(activity, 1), heading.x()));
@@ -247,10 +271,15 @@ public final class PinbaoRegression extends Instrumentation {
             dragEvent(drag, MotionEvent.ACTION_UP, after);
             await(() -> storedOrder(vault, draft.id(), blocks.get(1), blocks.get(0)) && onMain(activity::canAct),
                     "move whole group past outside card");
+            onMain(() -> action(activity, "切換為精簡模式").performClick());
+            await(() -> onMain(() -> action(activity, "展開串聯 驗收串聯") != null
+                    && action(activity, "串聯選項 驗收串聯") == null), "compact group open affordance");
             onMain(() -> action(activity, "展開串聯 驗收串聯").performClick());
-            await(() -> onMain(() -> activity.canAct() && named(root(activity), "排序項目 2") != null), "group unfolded");
+            await(() -> onMain(() -> activity.canAct() && named(root(activity), "排序項目 2") != null
+                    && named(root(activity), "驗收串聯") == null), "group unfolds with header hidden");
+            onMain(() -> action(activity, "切換為詳細模式").performClick());
 
-            Point inner = onMain(() -> center(button(card(activity, 2), "排序")));
+            Point inner = onMain(() -> center(dragHandle(activity, 2)));
             Point before = onMain(() -> {
                 View card = card(activity, 0);
                 return new Point(inner.x(), center(card).y() - card.getHeight() / 4f);
@@ -260,15 +289,15 @@ public final class PinbaoRegression extends Instrumentation {
             await(() -> storedOrder(vault, draft.id(), blocks.get(1), blocks.get(2)) && onMain(activity::canAct),
                     "member moves inside group");
 
-            Point inside = onMain(() -> center(button(card(activity, 0), "排序")));
+            Point inside = onMain(() -> center(dragHandle(activity, 0)));
             Point outside = onMain(() -> lowerPart(card(activity, 1), inside.x()));
             drag = startDrag(inside, outside);
             dragEvent(drag, MotionEvent.ACTION_UP, outside);
             await(() -> onMain(() -> card(activity, 0).getAlpha() == 1f), "outside group drop finishes");
             check(storedOrder(vault, draft.id(), blocks.get(1), blocks.get(2)), "member cannot leave group");
 
-            onMain(() -> card(activity, 0).performLongClick());
-            onMain(() -> card(activity, 1).performClick());
+            onMain(() -> body(activity, "排序項目 0").performLongClick());
+            onMain(() -> body(activity, "排序項目 1").performClick());
             onMain(() -> action(activity, "刪除選取卡片").performClick());
             runOnMainSync(() -> dialog(activity).getButton(AlertDialog.BUTTON_POSITIVE).performClick());
             await(() -> storedOrder(vault, draft.id(), blocks.get(2), blocks.get(3)) && onMain(activity::canAct),
@@ -297,8 +326,8 @@ public final class PinbaoRegression extends Instrumentation {
     }
 
     private static View cardAction(Activity activity, String content, String description) {
-        View card = (View) named(root(activity), content).getParent();
-        return find(card, view -> description.equals(view.getContentDescription()));
+        return find((View) body(activity, content).getParent(),
+                view -> description.equals(view.getContentDescription()));
     }
 
     private static View action(Activity activity, String description) {
@@ -324,7 +353,7 @@ public final class PinbaoRegression extends Instrumentation {
             await(() -> onMain(() -> activity.canAct() && named(root(activity), title) != null), "shelf");
             onMain(() -> button((View) named(root(activity), title).getParent(), "開啟").performClick());
             await(() -> onMain(() -> activity.canAct() && named(root(activity), "排序項目 1") != null), "editor");
-            Point handle = onMain(() -> center(button(card(activity, 0), "排序")));
+            Point handle = onMain(() -> center(dragHandle(activity, 0)));
             Point afterSecond = onMain(() -> {
                 View second = card(activity, 1);
                 Point center = center(second);
@@ -335,14 +364,14 @@ public final class PinbaoRegression extends Instrumentation {
             await(() -> storedOrder(vault, draft.id(), blocks.get(1), blocks.get(0)) && onMain(activity::canAct),
                     "insert after second card");
 
-            Point cancelHandle = onMain(() -> center(button(card(activity, 1), "排序")));
+            Point cancelHandle = onMain(() -> center(dragHandle(activity, 1)));
             Point outside = onMain(() -> new Point(cancelHandle.x(), center(named(root(activity), title)).y()));
             drag = startDrag(cancelHandle, outside);
             dragEvent(drag, MotionEvent.ACTION_UP, outside);
             await(() -> onMain(() -> card(activity, 1).getAlpha() == 1f), "outside drop restores opacity");
             check(storedOrder(vault, draft.id(), blocks.get(1), blocks.get(0)), "outside drop retains order");
 
-            Point edgeHandle = onMain(() -> center(button(card(activity, 1), "排序")));
+            Point edgeHandle = onMain(() -> center(dragHandle(activity, 1)));
             ScrollView scroll = onMain(() -> (ScrollView) find(root(activity), v -> v instanceof ScrollView));
             Point edge = onMain(() -> new Point(edgeHandle.x(), center(scroll).y() + scroll.getHeight() / 2f - 10));
             drag = startDrag(edgeHandle, edge);
@@ -413,7 +442,28 @@ public final class PinbaoRegression extends Instrumentation {
     }
 
     private static View card(Activity activity, int index) {
-        return (View) named(root(activity), "排序項目 " + index).getParent();
+        return (View) body(activity, "排序項目 " + index).getParent();
+    }
+
+    private static View body(Activity activity, String content) {
+        return (View) named(root(activity), content).getParent();
+    }
+
+    private static View dragHandle(Activity activity, int index) {
+        return cardAction(activity, "排序項目 " + index, "排序卡片，一般段落，可拖曳或點按排序");
+    }
+
+    private static List<Point> toolbarPositions(Activity activity, String mode) {
+        return List.of(center(action(activity, "插入剪輯")), center(action(activity, "新增區塊")),
+                center(action(activity, mode)), center(action(activity, "預覽全文")),
+                center(action(activity, "複製全文")), center(action(activity, "匯出 ZIP")));
+    }
+
+    private void longPress(Point point) {
+        long down = SystemClock.uptimeMillis();
+        dragEvent(down, MotionEvent.ACTION_DOWN, point);
+        SystemClock.sleep(ViewConfiguration.getLongPressTimeout() + 140);
+        dragEvent(down, MotionEvent.ACTION_UP, point);
     }
 
     private static boolean hasLabel(View view, String label) {

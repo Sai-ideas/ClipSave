@@ -9,9 +9,11 @@ import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.text.StaticLayout;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -22,7 +24,9 @@ import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.io.IOException;
 import java.io.OutputStream;
+import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -51,7 +55,7 @@ final class DraftWorkspace {
     private LinearLayout page;
     private final Set<String> selectedIds = new LinkedHashSet<>();
     private boolean reading;
-    private Map<String, Bitmap> readingImages = Collections.emptyMap();
+    private Map<String, Bitmap> cardImages = Collections.emptyMap();
     private Position remembered;
     private record Position(String draftId, int scrollY, boolean reading) {}
     private record Opened(Draft draft, Map<String, Bitmap> images) {}
@@ -169,8 +173,7 @@ final class DraftWorkspace {
                 () -> activity.runForeground(() -> {
                     Draft stored = vault.draft(draft.id());
                     if (stored.sensitive() && !draft.sensitive()) throw new Vault.Limit("請重新開啟私密拼報。");
-                    return new Opened(stored, position != null && position.reading()
-                            ? loadImages(stored) : Collections.emptyMap());
+                    return new Opened(stored, loadImages(stored, Collections.emptyMap(), true));
                 }, opened -> renderDraft(opened.draft(), position, opened.images())));
     }
 
@@ -252,12 +255,18 @@ final class DraftWorkspace {
         boolean sensitive = draft.sensitive() || selected.stream().anyMatch(Vault.Entry::sensitive);
         ArrayList<String> ids = new ArrayList<>(selected.size());
         for (Vault.Entry entry : selected) ids.add(entry.id());
-        activity.authorize(sensitive, "插入私密剪輯", () -> activity.runForeground(
-                () -> vault.addDraftClips(draft.id(), ids, sensitive), this::renderDraft));
+        activity.authorize(sensitive, "插入私密剪輯", () -> {
+            Map<String, Bitmap> cached = current != null && current.id().equals(draft.id())
+                    ? cardImages : Collections.emptyMap();
+            activity.runForeground(() -> {
+                Draft stored = vault.addDraftClips(draft.id(), ids, sensitive);
+                return new Opened(stored, loadImages(stored, cached, true));
+            }, opened -> renderDraft(opened.draft(), null, opened.images()));
+        });
     }
 
     private void renderDraft(Draft draft) {
-        renderDraft(draft, null, Collections.emptyMap());
+        renderDraft(draft, null, null);
     }
 
     private void renderDraft(Draft draft, Position position, Map<String, Bitmap> images) {
@@ -265,9 +274,16 @@ final class DraftWorkspace {
         int offset = position != null ? position.scrollY()
                 : sameDraft ? ((ScrollView) page.getParent()).getScrollY() : 0;
         if (!sameDraft) resetEditorMode();
-        if (position != null) {
-            reading = position.reading();
-            readingImages = images;
+        if (position != null) reading = position.reading();
+        if (images != null) cardImages = images;
+        if (!cardImages.isEmpty()) {
+            HashMap<String, Bitmap> retained = new HashMap<>();
+            for (Draft.Block block : draft.blocks()) {
+                if (block.image() && cardImages.containsKey(block.sourceId())) {
+                    retained.put(block.sourceId(), cardImages.get(block.sourceId()));
+                }
+            }
+            cardImages = retained;
         }
         active = true;
         reloadShelf = false;
@@ -310,17 +326,16 @@ final class DraftWorkspace {
 
         LinearLayout actions = activity.row();
         if (selectedIds.isEmpty()) {
-            if (!reading) {
-                addToolbarAction(actions, "插入", "插入剪輯", 1, () -> pickClip(draft));
-                addToolbarAction(actions, "新增", "新增區塊", 1, () -> chooseBlockKind(draft));
-            }
-            String label = reading ? "顯示編輯" : "隱藏編輯";
-            Button mode = addToolbarAction(actions, label, label, 1, () -> toggleReading(draft));
+            addToolbarAction(actions, "插入", "插入剪輯", 1, () -> pickClip(draft));
+            addToolbarAction(actions, "新增", "新增區塊", 1, () -> chooseBlockKind(draft));
+            String label = reading ? "詳細" : "精簡";
+            Button mode = addToolbarAction(actions, label, "切換為" + label + "模式", 1,
+                    () -> toggleReading(draft));
             mode.setSelected(reading);
             if (reading) mode.setTextColor(accent);
             addToolbarAction(actions, "預覽", "預覽全文", 1, () -> preview(draft));
             addToolbarAction(actions, "複製", "複製全文", 1, () -> copy(draft));
-            addToolbarAction(actions, "匯出 ZIP", "匯出 ZIP", 1, () -> export(draft));
+            addToolbarAction(actions, "匯出", "匯出 ZIP", 1, () -> export(draft));
         } else {
             TextView count = activity.text("已選 " + selectedIds.size() + " 張", 14, ink, true);
             count.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
@@ -378,21 +393,13 @@ final class DraftWorkspace {
     }
 
     private void toggleReading(Draft draft) {
-        if (reading) {
-            resetEditorMode();
-            renderDraft(draft);
-        } else {
-            activity.runForeground(() -> loadImages(draft), images -> {
-                reading = true;
-                readingImages = images;
-                renderDraft(draft);
-            });
-        }
+        reading = !reading;
+        renderDraft(draft);
     }
 
     private void resetEditorMode() {
         reading = false;
-        readingImages = Collections.emptyMap();
+        cardImages = Collections.emptyMap();
         selectedIds.clear();
     }
 
@@ -425,28 +432,22 @@ final class DraftWorkspace {
         container.setBackground(frame);
         container.setPadding(activity.dp(8), activity.dp(6), activity.dp(8), activity.dp(8));
 
-        LinearLayout header = activity.row();
         boolean editing = !reading && selectedIds.isEmpty();
-        if (reading) {
-            TextView title = activity.text(group.title(), 16, ink, true);
-            title.setAccessibilityHeading(true);
-            header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        } else {
-            Button title = textControl(group.title(), "排序串聯 " + group.title() + "，拖曳可移動整組", order);
-            title.setTextSize(15);
-            title.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        Runnable toggleFold = () -> saveDraft(draft, draft.toggleGroup(group));
+        if (!reading) {
+            LinearLayout header = activity.row();
+            Button title = dragTitle(group.title(), "排序串聯 " + group.title() + "，拖曳可移動整組", order);
             title.setEnabled(editing);
             header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-            if (editing) outer.addCard(container, title);
+            if (editing) {
+                outer.addCard(container, title);
+                header.addView(foldButton(!group.collapsed(), "串聯 " + group.title(), toggleFold));
+                header.addView(textControl("選項", "串聯選項 " + group.title(), () -> groupOptions(draft, group)));
+            }
+            container.addView(header);
+        } else if (group.collapsed()) {
+            container.addView(textControl("▸ 展開串聯", "展開串聯 " + group.title(), toggleFold));
         }
-        if (selectedIds.isEmpty()) {
-            String label = group.collapsed() ? "展開" : "折疊";
-            header.addView(textControl(label, label + "串聯 " + group.title(),
-                    () -> saveDraft(draft, draft.toggleGroup(group))));
-        }
-        if (editing) header.addView(textControl("選項", "串聯選項 " + group.title(),
-                () -> groupOptions(draft, group)));
-        container.addView(header);
         if (group.collapsed()) return container;
 
         LinearLayout items = activity.column();
@@ -529,28 +530,45 @@ final class DraftWorkspace {
         Draft.Block block = draft.blocks().get(index);
         LinearLayout item = panel();
         boolean selecting = !selectedIds.isEmpty();
-        if (!reading) item.setOnLongClickListener(view -> {
-            toggleSelected(draft, block.id());
-            return true;
-        });
-        if (selecting) {
-            boolean selected = selectedIds.contains(block.id());
-            item.setSelected(selected);
-            item.setOnClickListener(view -> toggleSelected(draft, block.id()));
-            item.addView(activity.text(selected ? "✓ 已選取" : "未選取", 13, accent, true));
-        }
+        boolean editing = !reading && !selecting;
+        boolean selected = selectedIds.contains(block.id());
+        item.setSelected(selected);
+        Runnable toggleFold = () -> saveDraft(draft, draft.toggleBlock(index));
+
         Draft.Block.Kind kind = block.kind();
+        Button fold = null;
         if (!reading) {
-            String label = block.image() ? "圖片" : kind == Draft.Block.Kind.TEXT
+            String type = block.image() ? "圖片" : kind == Draft.Block.Kind.TEXT
                     && Vault.isWebLink(block.content()) ? "網址" : kind.label;
-            item.addView(activity.text(label, 12, muted, true));
+            LinearLayout header = activity.row();
+            Button handle = dragTitle(type, "排序卡片，" + type + "，可拖曳或點按排序", order);
+            handle.setEnabled(editing);
+            header.addView(handle, new LinearLayout.LayoutParams(0, -2, 1));
+            if (editing) {
+                reorder.addCard(item, handle);
+                if (kind != Draft.Block.Kind.DIVIDER) {
+                    fold = foldButton(block.expanded(), "內文", toggleFold);
+                    header.addView(fold);
+                }
+                header.addView(textControl("選項", "卡片選項", () -> cardOptions(draft, index)));
+            } else {
+                header.addView(activity.text(selected ? "✓ 已選取" : "未選取", 13, accent, true));
+            }
+            item.addView(header);
         }
 
-        View content;
-        if (reading) content = previewBlock(block, readingImages);
-        else if (block.image()) content = activity.text(block.content(), 16, ink, false);
-        else if (!selecting && kind == Draft.Block.Kind.CHECKLIST) content = checklistBlock(draft, index);
-        else content = textBlock(block);
+        LinearLayout body = activity.column();
+        body.setMinimumHeight(activity.dp(24));
+        if (!reading) {
+            body.setOnLongClickListener(view -> {
+                toggleSelected(draft, block.id());
+                return true;
+            });
+            if (selecting) body.setOnClickListener(view -> toggleSelected(draft, block.id()));
+        }
+
+        View content = kind == Draft.Block.Kind.CHECKLIST ? checklistBlock(draft, index, editing)
+                : previewBlock(block, cardImages);
         if (!block.expanded()) {
             if (content instanceof TextView text) {
                 text.setMaxLines(3);
@@ -559,58 +577,96 @@ final class DraftWorkspace {
                 image.setMaxHeight(activity.dp(120));
             }
         }
-        item.addView(content, activity.margins(-1, -2, reading ? 0 : 6, 0));
-
-        if (selecting) return item;
-        LinearLayout actions = activity.row();
-        if (reading) {
-            actions.setGravity(Gravity.END);
-            addFoldControl(actions, draft, index, content);
-            item.addView(actions);
-            return item;
+        body.addView(content, activity.margins(-1, -2, 0, 0));
+        item.addView(body, activity.margins(-1, -2, reading ? 0 : 4, 0));
+        if (kind != Draft.Block.Kind.DIVIDER && (reading || editing)) {
+            bindFoldAction(body, content, block, fold, toggleFold);
         }
-        Button handle = button("排序", order);
-        handle.setMinWidth(activity.dp(64));
-        handle.setMinimumWidth(activity.dp(64));
-        Drawable icon = activity.getDrawable(R.drawable.ic_reorder).mutate();
-        icon.setTint(accent);
-        handle.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, null, null, null);
-        handle.setCompoundDrawablePadding(activity.dp(2));
-        handle.setContentDescription("排序，拖曳可移動區塊，點按可上移或下移");
-        actions.addView(handle, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
-                activity.dp(48)));
-        reorder.addCard(item, handle);
-        if (!block.image() && kind != Draft.Block.Kind.DIVIDER) {
-            addAction(actions, "編輯", () -> editBlock(draft, index));
-        }
-        addAction(actions, "移除", () -> removeBlock(draft, index));
-        addFoldControl(actions, draft, index, content);
-        item.addView(actions, activity.margins(-1, -2, 6, 0));
         return item;
     }
 
-    private void addFoldControl(LinearLayout actions, Draft draft, int index, View content) {
-        Draft.Block block = draft.blocks().get(index);
-        if (block.kind() == Draft.Block.Kind.DIVIDER) return;
-        String label = block.expanded() ? "折疊" : "展開";
-        Button fold = textControl(label, label + "內文", () -> saveDraft(draft, draft.toggleBlock(index)));
-        actions.addView(fold);
-        if (block.expanded() || content instanceof ImageView) return;
-        if (block.kind() == Draft.Block.Kind.CHECKLIST && !reading
-                && Checklist.items(block.content()).size() > 3) return;
-        fold.setVisibility(View.GONE);
-        content.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
-                fold.setVisibility(isClipped(content) ? View.VISIBLE : View.GONE));
+    private Button dragTitle(String title, String description, Runnable action) {
+        Button control = textControl(title, description, action);
+        control.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        control.setTextSize(15);
+        control.setMaxLines(2);
+        control.setEllipsize(TextUtils.TruncateAt.END);
+        control.setAccessibilityHeading(true);
+        Drawable grip = activity.getDrawable(R.drawable.ic_reorder).mutate();
+        int size = activity.dp(16);
+        grip.setBounds(0, 0, size, size);
+        grip.setTint(muted);
+        control.setCompoundDrawablesRelative(grip, null, null, null);
+        control.setCompoundDrawablePadding(activity.dp(6));
+        return control;
     }
 
-    private boolean isClipped(View view) {
-        if (view instanceof TextView text && text.getLayout() != null) {
-            int last = text.getLineCount() - 1;
-            return last >= 0 && (last >= text.getMaxLines() || text.getLayout().getEllipsisCount(last) > 0);
+    private Button foldButton(boolean expanded, String target, Runnable action) {
+        Button control = textControl(expanded ? "▾" : "▸",
+                (expanded ? "摺疊" : "展開") + target, action);
+        control.setTextSize(20);
+        return control;
+    }
+
+    private void cardOptions(Draft draft, int index) {
+        Draft.Block block = draft.blocks().get(index);
+        boolean editable = !block.image() && block.kind() != Draft.Block.Kind.DIVIDER;
+        String[] labels = editable ? new String[]{"編輯", "刪除"} : new String[]{"刪除"};
+        activity.show(new AlertDialog.Builder(activity).setTitle("卡片選項")
+                .setItems(labels, (dialog, which) -> {
+                    if (editable && which == 0) editBlock(draft, index);
+                    else removeBlock(draft, index);
+                }).setNegativeButton("取消", null));
+    }
+
+    private void bindFoldAction(LinearLayout body, View content, Draft.Block block, Button fold, Runnable action) {
+        if (fold != null) fold.setVisibility(View.INVISIBLE);
+        String label = block.expanded() ? "摺疊內文" : "展開內文";
+        Runnable refresh = () -> {
+            boolean foldable = block.expanded() || content instanceof ImageView
+                    || (block.kind() == Draft.Block.Kind.CHECKLIST && Checklist.items(block.content()).size() > 3)
+                    || exceedsLineLimit(content);
+            if (fold != null) {
+                fold.setVisibility(foldable ? View.VISIBLE : View.INVISIBLE);
+            } else {
+                body.setOnClickListener(foldable ? view -> {
+                    if (activity.canAct()) action.run();
+                } : null);
+                body.setClickable(foldable);
+                body.setFocusable(foldable);
+                body.setAccessibilityDelegate(foldable ? new View.AccessibilityDelegate() {
+                    @Override public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
+                        super.onInitializeAccessibilityNodeInfo(host, info);
+                        info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                                AccessibilityNodeInfo.ACTION_CLICK, label));
+                    }
+                } : null);
+            }
+        };
+        int[] measuredWidth = {-1};
+        content.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            int width = right - left;
+            if (measuredWidth[0] != width) {
+                measuredWidth[0] = width;
+                refresh.run();
+            }
+        });
+    }
+
+    private boolean exceedsLineLimit(View view) {
+        if (view instanceof TextView text) {
+            int max = text.getMaxLines();
+            int width = text.getWidth() - text.getCompoundPaddingLeft() - text.getCompoundPaddingRight();
+            if (max < 1 || max > 3 || width <= 0) return false;
+            CharSequence content = text.getText();
+            return StaticLayout.Builder.obtain(content, 0, content.length(), text.getPaint(), width)
+                    .setBreakStrategy(text.getBreakStrategy())
+                    .setHyphenationFrequency(text.getHyphenationFrequency())
+                    .setMaxLines(max + 1).build().getLineCount() > max;
         }
         if (view instanceof LinearLayout list) {
             for (int index = 0; index < list.getChildCount(); index++) {
-                if (isClipped(list.getChildAt(index))) return true;
+                if (exceedsLineLimit(list.getChildAt(index))) return true;
             }
         }
         return false;
@@ -649,7 +705,7 @@ final class DraftWorkspace {
         }
     }
 
-    private View checklistBlock(Draft draft, int index) {
+    private View checklistBlock(Draft draft, int index, boolean editing) {
         LinearLayout list = activity.column();
         List<Checklist.Item> items = Checklist.items(draft.blocks().get(index).content());
         boolean expanded = draft.blocks().get(index).expanded();
@@ -663,6 +719,12 @@ final class DraftWorkspace {
             if (!expanded) {
                 box.setMaxLines(1);
                 box.setEllipsize(TextUtils.TruncateAt.END);
+            }
+            if (!editing) {
+                box.setClickable(false);
+                box.setFocusable(false);
+                list.addView(box, new LinearLayout.LayoutParams(-1, -2));
+                continue;
             }
             box.setOnLongClickListener(view -> {
                 toggleSelected(draft, draft.blocks().get(index).id());
@@ -768,11 +830,22 @@ final class DraftWorkspace {
         activity.runForeground(() -> vault.updateDraft(original, changed), this::renderDraft);
     }
 
-    private Map<String, Bitmap> loadImages(Draft draft) throws Exception {
+    private Map<String, Bitmap> loadImages(Draft draft, Map<String, Bitmap> cached, boolean allowMissing)
+            throws Exception {
         Map<String, Bitmap> images = new HashMap<>();
         for (Draft.Block block : draft.blocks()) {
             if (!block.image() || images.containsKey(block.sourceId())) continue;
-            byte[] bytes = vault.draftImage(draft, block);
+            if (cached.containsKey(block.sourceId())) {
+                images.put(block.sourceId(), cached.get(block.sourceId()));
+                continue;
+            }
+            byte[] bytes;
+            try {
+                bytes = vault.draftImage(draft, block);
+            } catch (IOException | GeneralSecurityException error) {
+                if (!allowMissing) throw error;
+                continue;
+            }
             try {
                 BitmapFactory.Options options = new BitmapFactory.Options();
                 options.inJustDecodeBounds = true;
@@ -802,7 +875,7 @@ final class DraftWorkspace {
     }
 
     private void preview(Draft draft) {
-        activity.runForeground(() -> loadImages(draft), images -> {
+        activity.runForeground(() -> loadImages(draft, Collections.emptyMap(), false), images -> {
             ScrollView scroll = new ScrollView(activity);
             LinearLayout body = activity.dialogBody();
             scroll.addView(body);
