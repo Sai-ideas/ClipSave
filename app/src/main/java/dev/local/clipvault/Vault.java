@@ -32,6 +32,7 @@ import javax.crypto.spec.GCMParameterSpec;
 
 final class Vault {
     static final int MAX_TEXT = 20_000;
+    static final int MAX_PRIVATE_DESCRIPTION = 80;
     static final int MAX_ATTACHMENT = 16 * 1024 * 1024;
     private static final int MAX_ENTRIES = 200;
     private static final int MAX_DRAFTS = 30;
@@ -43,7 +44,7 @@ final class Vault {
     private static Vault instance;
 
     record Entry(String id, String mime, String content, long savedAt, int bytes,
-                 boolean pinned, boolean starred, boolean sensitive, String tag) {
+                 boolean pinned, boolean starred, boolean sensitive, String tag, String privateDescription) {
         boolean attachment() { return !mime.equals("text/plain"); }
 
         String type() {
@@ -52,25 +53,31 @@ final class Vault {
             return isWebLink(content) ? "連結" : "文字";
         }
 
-        Entry withOptions(boolean pin, boolean star, String label) {
-            return new Entry(id, mime, content, savedAt, bytes, pin, star, sensitive, label);
+        String privateTitle() {
+            return privateDescription.isEmpty() ? "****" : privateDescription;
         }
 
-        Entry protect() {
-            return new Entry(id, mime, content, savedAt, bytes, pinned, starred, true, tag);
+        Entry withOptions(boolean pin, boolean star, String label, String description) {
+            return new Entry(id, mime, content, savedAt, bytes, pin, star, sensitive, label, description);
+        }
+
+        Entry protect(String description) {
+            return new Entry(id, mime, content, savedAt, bytes, pinned, starred, true, tag, description);
         }
 
         JSONObject toJson() throws Exception {
             return new JSONObject()
                     .put("id", id).put("mime", mime).put("content", content)
                     .put("savedAt", savedAt).put("bytes", bytes).put("pinned", pinned)
-                    .put("starred", starred).put("sensitive", sensitive).put("tag", tag);
+                    .put("starred", starred).put("sensitive", sensitive).put("tag", tag)
+                    .put("privateDescription", privateDescription);
         }
 
         static Entry fromJson(JSONObject json) throws Exception {
             return new Entry(json.getString("id"), json.getString("mime"), json.getString("content"),
                     json.getLong("savedAt"), json.getInt("bytes"), json.getBoolean("pinned"),
-                    json.getBoolean("starred"), json.getBoolean("sensitive"), json.getString("tag"));
+                    json.getBoolean("starred"), json.getBoolean("sensitive"), json.getString("tag"),
+                    json.optString("privateDescription", ""));
         }
     }
 
@@ -128,8 +135,9 @@ final class Vault {
         commit(next, days);
     }
 
-    synchronized Entry addText(String text, boolean sensitive) throws Exception {
+    synchronized Entry addText(String text, boolean sensitive, String description) throws Exception {
         validateText(text);
+        String privateDescription = sensitive ? normalizeDescription(description) : "";
         load();
         prune();
         long now = System.currentTimeMillis();
@@ -138,14 +146,15 @@ final class Vault {
             Entry old = next.get(i);
             if (!old.attachment() && old.content().equals(text)) {
                 Entry updated = new Entry(old.id(), old.mime(), text, now, 0, old.pinned(),
-                        old.starred(), old.sensitive() || sensitive, old.tag());
+                        old.starred(), old.sensitive() || sensitive, old.tag(),
+                        old.sensitive() ? old.privateDescription() : privateDescription);
                 next.set(i, updated);
                 commit(next, retention);
                 return updated;
             }
         }
         Entry entry = new Entry(UUID.randomUUID().toString(), "text/plain", text, now, 0,
-                false, false, sensitive, "");
+                false, false, sensitive, "", privateDescription);
         insert(next, entry);
         return entry;
     }
@@ -164,7 +173,8 @@ final class Vault {
         if (current.attachment()) throw new Limit("只有文字與連結可以編輯。");
         if (current.content().equals(text)) return;
         update(new Entry(id, current.mime(), text, current.savedAt(), current.bytes(),
-                current.pinned(), current.starred(), current.sensitive(), current.tag()));
+                current.pinned(), current.starred(), current.sensitive(), current.tag(),
+                current.privateDescription()));
     }
 
     private static void validateText(String text) throws Limit {
@@ -172,7 +182,13 @@ final class Vault {
         if (text.length() > MAX_TEXT) throw new Limit("文字超過 20,000 個字元。");
     }
 
-    synchronized Entry addAttachment(String mime, String name, byte[] data, boolean sensitive)
+    private static String normalizeDescription(String value) throws Limit {
+        String singleLine = value.replaceAll("\\R", " ").replaceAll("^\\h+|\\h+$", "");
+        if (singleLine.length() > MAX_PRIVATE_DESCRIPTION) throw new Limit("顯示描述最多 80 個字元。");
+        return singleLine;
+    }
+
+    synchronized Entry addAttachment(String mime, String name, byte[] data, boolean sensitive, String description)
             throws Exception {
         if (!supportsAttachment(mime) || data.length == 0 || data.length > MAX_ATTACHMENT) {
             throw new Limit("請選擇 16 MiB 以內的圖片。");
@@ -183,7 +199,7 @@ final class Vault {
         long used = storedAttachments(next, drafts).values().stream().mapToLong(Integer::longValue).sum();
         if (used + data.length > MAX_MEDIA_TOTAL) throw new Limit("附件空間已滿（96 MiB）。");
         Entry entry = new Entry(UUID.randomUUID().toString(), mime, name, System.currentTimeMillis(),
-                data.length, false, false, sensitive, "");
+                data.length, false, false, sensitive, "", sensitive ? normalizeDescription(description) : "");
         File encrypted = file(entry.id());
         write(new AtomicFile(encrypted), encrypt(data, entry.id()));
         try {
@@ -195,14 +211,17 @@ final class Vault {
         return entry;
     }
 
-    synchronized void updateOptions(String id, boolean pin, boolean star, String tag) throws Exception {
+    synchronized void updateOptions(String id, boolean pin, boolean star, String tag, String description)
+            throws Exception {
         Entry current = entry(id);
-        update(current.withOptions(pin, star, tag));
+        String display = current.sensitive() && description != null
+                ? normalizeDescription(description) : current.privateDescription();
+        update(current.withOptions(pin, star, tag, display));
     }
 
-    synchronized void protectEntry(String id) throws Exception {
+    synchronized void protectEntry(String id, String description) throws Exception {
         Entry current = entry(id);
-        if (!current.sensitive()) update(current.protect());
+        if (!current.sensitive()) update(current.protect(normalizeDescription(description)));
     }
 
     private void update(Entry entry) throws Exception {

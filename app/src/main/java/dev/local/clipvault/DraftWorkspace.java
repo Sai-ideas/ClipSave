@@ -531,7 +531,7 @@ final class DraftWorkspace {
     }
 
     private static String clipLabel(Vault.Entry entry) {
-        if (entry.sensitive()) return entry.type() + " · 私密剪輯";
+        if (entry.sensitive()) return entry.type() + " · 私密 · " + entry.privateTitle();
         String content = entry.content();
         return entry.type() + " · " + (content.length() > 70 ? content.substring(0, 70) + "…" : content);
     }

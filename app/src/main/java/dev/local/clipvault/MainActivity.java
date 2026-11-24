@@ -433,8 +433,9 @@ public final class MainActivity extends Activity {
         heading.addView(details, detailsLayout);
         card.addView(heading);
 
-        TextView content = text(entry.sensitive() ? "****" : entry.content(), 17, ink, true);
-        if (entry.sensitive()) content.setContentDescription("私密剪輯，內容已隱藏");
+        TextView content = text(entry.sensitive() ? entry.privateTitle() : entry.content(), 17, ink, true);
+        if (entry.sensitive()) content.setContentDescription(entry.privateDescription().isEmpty()
+                ? "私密剪輯，內容已隱藏" : "私密剪輯，" + entry.privateDescription());
         content.setMaxLines(3);
         content.setEllipsize(TextUtils.TruncateAt.END);
         card.addView(content, margins(-1, -2, 10, 9));
@@ -528,10 +529,16 @@ public final class MainActivity extends Activity {
         EditText input = edit("輸入文字或連結", Vault.MAX_TEXT, true);
         body.addView(input);
         CheckBox mask = checkbox("標為私密", false);
-        if (entry == null) body.addView(mask);
-        else input.setText(entry.content());
+        EditText description;
+        if (entry == null) {
+            body.addView(mask);
+            description = addPrivateDescription(body, "", mask);
+        } else {
+            input.setText(entry.content());
+            description = null;
+        }
         AlertDialog prompt = show(new AlertDialog.Builder(this)
-                .setTitle(entry == null ? "新增文字" : "編輯內容").setView(body)
+                .setTitle(entry == null ? "新增文字" : "編輯內容").setView(dialogScroll(body))
                 .setNegativeButton("取消", null).setPositiveButton("儲存", null));
         privateDialog = entry != null && entry.sensitive();
         prompt.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
@@ -543,7 +550,8 @@ public final class MainActivity extends Activity {
             }
             if (entry == null) {
                 prompt.dismiss();
-                save(new Capture(value, null, null, mask.isChecked()), mask.isChecked());
+                save(new Capture(value, null, null, mask.isChecked()), mask.isChecked(),
+                        description.getText().toString());
             } else {
                 mutate(() -> { vault.updateText(entry.id(), value); return null; }, "已更新內容", () -> {
                     if (dialog == prompt) dismissDialog();
@@ -623,24 +631,26 @@ public final class MainActivity extends Activity {
         CheckBox mask = checkbox("標為私密", capture.sensitive());
         mask.setEnabled(!capture.sensitive());
         body.addView(mask);
-        show(new AlertDialog.Builder(this).setTitle("收錄剪輯").setView(body)
+        EditText description = addPrivateDescription(body, "", mask);
+        show(new AlertDialog.Builder(this).setTitle("收錄剪輯").setView(dialogScroll(body))
                 .setNegativeButton("取消", (d, which) -> {
                     if (capture.fromSelection()) finish();
                 })
-                .setPositiveButton("儲存", (d, which) -> save(capture, mask.isChecked())));
+                .setPositiveButton("儲存", (d, which) -> save(capture, mask.isChecked(),
+                        description.getText().toString())));
     }
 
-    private void save(Capture capture, boolean sensitive) {
+    private void save(Capture capture, boolean sensitive, String description) {
         mutate(() -> {
-            if (capture.uri() == null) vault.addText(capture.text(), sensitive);
-            else importAttachment(capture.uri(), capture.mime(), sensitive);
+            if (capture.uri() == null) vault.addText(capture.text(), sensitive, description);
+            else importAttachment(capture.uri(), capture.mime(), sensitive, description);
             return null;
         }, "已儲存", () -> {
             if (capture.fromSelection()) finish();
         });
     }
 
-    private void importAttachment(Uri uri, String hint, boolean sensitive) throws Exception {
+    private void importAttachment(Uri uri, String hint, boolean sensitive, String description) throws Exception {
         if (!isContent(uri)) throw new Vault.Limit("無法讀取此附件。");
         String mime = getContentResolver().getType(uri);
         if (mime == null || mime.equals("application/octet-stream")) mime = hint;
@@ -661,7 +671,7 @@ public final class MainActivity extends Activity {
             if (input == null) throw new IOException("Attachment unavailable");
             byte[] data = readAttachment(input);
             try {
-                vault.addAttachment(mime, name, data, sensitive);
+                vault.addAttachment(mime, name, data, sensitive, description);
             } finally {
                 Arrays.fill(data, (byte) 0);
             }
@@ -769,7 +779,8 @@ public final class MainActivity extends Activity {
 
     private void entryOptions(Vault.Entry entry) {
         if (busy) return;
-        ArrayList<String> options = new ArrayList<>(Arrays.asList("置頂、收藏與標籤", "分享", "刪除"));
+        String organize = entry.sensitive() ? "整理剪輯（含顯示描述）" : "置頂、收藏與標籤";
+        ArrayList<String> options = new ArrayList<>(Arrays.asList(organize, "分享", "刪除"));
         String type = entry.type();
         if (!type.equals("PDF")) options.add("加入拼報");
         boolean waiting = reading.contains(entry.id());
@@ -802,15 +813,22 @@ public final class MainActivity extends Activity {
     }
 
     private void protectEntry(Vault.Entry entry) {
-        confirm("設為私密", "這筆剪輯和已加入拼報的副本都會受到保護。設為私密後無法轉回一般剪輯。",
-                "設為私密", () -> mutate(() -> {
-                    if (entry.attachment()) {
-                        revokeUriPermission(AttachmentProvider.uri(this, entry.id()),
-                                Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                    }
-                    vault.protectEntry(entry.id());
-                    return null;
-                }, "已設為私密"));
+        LinearLayout body = dialogBody();
+        body.addView(text("這筆剪輯和已加入拼報的副本都會受到保護。設為私密後無法轉回一般剪輯。",
+                16, ink, false));
+        EditText description = addPrivateDescription(body, "", null);
+        show(new AlertDialog.Builder(this).setTitle("設為私密").setView(dialogScroll(body))
+                .setNegativeButton("取消", null).setPositiveButton("設為私密", (dialog, which) -> {
+                    String value = description.getText().toString();
+                    mutate(() -> {
+                        if (entry.attachment()) {
+                            revokeUriPermission(AttachmentProvider.uri(this, entry.id()),
+                                    Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        }
+                        vault.protectEntry(entry.id(), value);
+                        return null;
+                    }, "已設為私密");
+                }));
     }
 
     void openLink(String value) {
@@ -831,17 +849,39 @@ public final class MainActivity extends Activity {
         body.addView(pin);
         body.addView(star);
         body.addView(tag);
-        show(new AlertDialog.Builder(this).setTitle("整理剪輯").setView(body)
+        EditText description = entry.sensitive() ? addPrivateDescription(body, entry.privateDescription(), null) : null;
+        show(new AlertDialog.Builder(this).setTitle("整理剪輯").setView(dialogScroll(body))
                 .setNegativeButton("取消", null).setPositiveButton("儲存", (d, which) -> {
                     boolean pinned = pin.isChecked();
                     boolean starred = star.isChecked();
                     String label = tag.getText().toString().trim();
+                    String display = description == null ? null : description.getText().toString();
                     mutate(() -> {
-                        vault.updateOptions(entry.id(), pinned, starred, label);
+                        vault.updateOptions(entry.id(), pinned, starred, label, display);
                         return null;
                     }, "已更新");
                 }));
         privateDialog = entry.sensitive();
+    }
+
+    private EditText addPrivateDescription(LinearLayout body, String value, CheckBox mask) {
+        LinearLayout field = column();
+        EditText input = edit("顯示描述（選填）", Vault.MAX_PRIVATE_DESCRIPTION, false);
+        input.setText(value);
+        field.addView(input);
+        field.addView(text("驗證前可見，留空顯示 ****", 13, muted, false));
+        if (mask != null) {
+            field.setVisibility(mask.isChecked() ? View.VISIBLE : View.GONE);
+            mask.setOnCheckedChangeListener((button, checked) -> field.setVisibility(checked ? View.VISIBLE : View.GONE));
+        }
+        body.addView(field, margins(-1, -2, 8, 0));
+        return input;
+    }
+
+    private ScrollView dialogScroll(LinearLayout body) {
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(body);
+        return scroll;
     }
 
     private void share(Vault.Entry entry) {

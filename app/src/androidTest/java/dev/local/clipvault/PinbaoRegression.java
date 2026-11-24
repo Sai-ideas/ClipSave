@@ -69,18 +69,33 @@ public final class PinbaoRegression extends Instrumentation {
         List<String> clips = new ArrayList<>();
         Draft draft = vault.createDraft("Privacy " + marker);
         try {
-            Vault.Entry text = vault.addText(marker, false);
+            Vault.Entry text = vault.addText(marker, false, "");
             clips.add(text.id());
             Vault.Entry image = vault.addAttachment("image/png", marker + ".png",
-                    marker.getBytes(StandardCharsets.UTF_8), false);
+                    marker.getBytes(StandardCharsets.UTF_8), false, "");
             clips.add(image.id());
-            Vault.Entry link = vault.addText("https://example.com/" + marker, true);
+            Vault.Entry link = vault.addText("https://example.com/" + marker, true, "連結提示");
             clips.add(link.id());
+            check(link.privateTitle().equals("連結提示"), "description set on new capture");
 
             check(!vault.addDraftClips(draft.id(), List.of(text.id(), image.id()), false).sensitive(), "public copies");
-            vault.protectEntry(text.id());
-            vault.protectEntry(image.id());
-            vault.updateOptions(text.id(), true, true, "fixture");
+            vault.protectEntry(text.id(), "  工作帳號\n副本  ");
+            vault.protectEntry(image.id(), "");
+            check(vault.entry(text.id()).privateTitle().equals("工作帳號 副本"), "conversion description");
+            check(vault.entry(image.id()).privateTitle().equals("****"), "blank description falls back to mask");
+            check(vault.addText(marker, true, "new capture").privateTitle().equals("工作帳號 副本"),
+                    "duplicate capture preserves the existing description");
+            vault.updateText(text.id(), marker + " edited");
+            check(vault.entry(text.id()).privateTitle().equals("工作帳號 副本"), "content edits preserve description");
+            vault.updateOptions(text.id(), true, true, "fixture", "已編輯提示");
+            Vault.Entry renamed = vault.entry(text.id());
+            check(Vault.Entry.fromJson(renamed.toJson()).privateTitle().equals("已編輯提示"),
+                    "edited description survives serialization");
+            JSONObject legacyEntry = renamed.toJson();
+            legacyEntry.remove("privateDescription");
+            check(Vault.Entry.fromJson(legacyEntry).privateTitle().equals("****"), "legacy entry fallback");
+            vault.updateOptions(text.id(), true, true, "fixture", "　 ");
+            check(vault.entry(text.id()).privateTitle().equals("****"), "clear description");
             check(vault.entry(text.id()).sensitive() && vault.entry(text.id()).starred(), "options keep privacy");
             try {
                 vault.addDraftClips(draft.id(), List.of(link.id()), false);
