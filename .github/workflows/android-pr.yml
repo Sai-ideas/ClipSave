@@ -35,7 +35,7 @@ jobs:
           echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
       - name: Build and check the app
-        run: ./gradlew --no-daemon :app:assembleDebug :app:lintDebug
+        run: ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug
       - uses: actions/upload-artifact@v6
         with:
           name: ClipSave-PR-debug

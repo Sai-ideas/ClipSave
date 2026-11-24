@@ -100,8 +100,8 @@ final class DraftWorkspace {
         }
         for (Draft draft : drafts) {
             LinearLayout item = panel();
-            item.addView(activity.text(displayName(draft), 18, ink, true));
-            item.addView(activity.text(draft.sensitive() ? "驗證後開啟" : draft.blocks().size() + " 個區塊",
+            item.addView(activity.text(draft.title(), 18, ink, true));
+            item.addView(activity.text(draft.sensitive() ? "私密 · 驗證後開啟" : draft.blocks().size() + " 個區塊",
                     13, muted, false));
             LinearLayout actions = activity.row();
             addAction(actions, "開啟", () -> open(draft));
@@ -527,11 +527,11 @@ final class DraftWorkspace {
     }
 
     private static String displayName(Draft draft) {
-        return draft.sensitive() ? "私密拼報" : draft.title();
+        return draft.sensitive() ? draft.title() + " · 私密" : draft.title();
     }
 
     private static String clipLabel(Vault.Entry entry) {
-        if (entry.sensitive()) return entry.type() + " · 私密剪輯";
+        if (entry.sensitive()) return entry.type() + " · 私密 · " + entry.privateTitle();
         String content = entry.content();
         return entry.type() + " · " + (content.length() > 70 ? content.substring(0, 70) + "…" : content);
     }
