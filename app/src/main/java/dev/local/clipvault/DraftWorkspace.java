@@ -252,16 +252,20 @@ final class DraftWorkspace {
         item.addView(content, activity.margins(-1, -2, 5, 4));
 
         LinearLayout actions = activity.row();
-        if (!block.image() && kind != Draft.Block.Kind.DIVIDER) {
-            addAction(actions, "編輯", () -> editBlock(draft, index));
-        }
-        Button handle = addAction(actions, "排序", () -> blockOrder(draft, index));
+        Button handle = button("排序", () -> blockOrder(draft, index));
+        handle.setMinWidth(activity.dp(64));
+        handle.setMinimumWidth(activity.dp(64));
         Drawable icon = activity.getDrawable(R.drawable.ic_reorder).mutate();
         icon.setTint(accent);
         handle.setCompoundDrawablesRelativeWithIntrinsicBounds(icon, null, null, null);
         handle.setCompoundDrawablePadding(activity.dp(2));
         handle.setContentDescription("排序，拖曳可移動區塊，點按可上移或下移");
+        actions.addView(handle, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT,
+                activity.dp(48)));
         reorder.addCard(item, handle);
+        if (!block.image() && kind != Draft.Block.Kind.DIVIDER) {
+            addAction(actions, "編輯", () -> editBlock(draft, index));
+        }
         addAction(actions, "移除", () -> removeBlock(draft, index));
         item.addView(actions);
         return item;
