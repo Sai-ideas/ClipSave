@@ -332,10 +332,15 @@ public final class MainActivity extends Activity {
     }
 
     LinearLayout newPage() {
+        return newPage(null);
+    }
+
+    LinearLayout newPage(View toolbar) {
         startScreen();
+        if (toolbar != null) root.addView(toolbar, new LinearLayout.LayoutParams(-1, -2));
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        root.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
+        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         LinearLayout page = column();
         page.setPadding(dp(20), dp(12), dp(20), dp(24));
         scroll.addView(page, new ScrollView.LayoutParams(-1, -2));

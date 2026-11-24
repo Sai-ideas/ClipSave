@@ -1,6 +1,7 @@
 package dev.local.clipvault;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.Instrumentation;
 import android.content.Intent;
 import android.os.Bundle;
@@ -10,6 +11,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -20,6 +22,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -40,11 +43,13 @@ public final class PinbaoRegression extends Instrumentation {
         try {
             checklist();
             Vault vault = Vault.get(getTargetContext());
+            arrangement();
             privacy(vault, UUID.randomUUID().toString());
             reorder(vault, UUID.randomUUID().toString());
+            workspace(vault, UUID.randomUUID().toString());
             var config = getTargetContext().getResources().getConfiguration();
             int dpi = getTargetContext().getResources().getDisplayMetrics().densityDpi;
-            report.putString("stream", "PASS checklist, privacy and drag at " + config.screenWidthDp
+            report.putString("stream", "PASS checklist, privacy, sticky toolbar, selection and grouped drag at " + config.screenWidthDp
                     + "dp, font scale " + config.fontScale + ", density " + dpi + "dpi\n");
             finish(Activity.RESULT_OK, report);
         } catch (Throwable error) {
@@ -124,6 +129,144 @@ public final class PinbaoRegression extends Instrumentation {
             vault.deleteDraft(vault.draft(draft.id()));
             for (String id : clips) vault.delete(id);
         }
+    }
+
+    private static void arrangement() throws Exception {
+        Draft first = Draft.create("Arrangement");
+        Draft.Block a = Draft.Block.text(Draft.Block.PARAGRAPH, "A");
+        Draft.Block b = Draft.Block.text(Draft.Block.PARAGRAPH, "B");
+        Draft.Block c = Draft.Block.text(Draft.Block.PARAGRAPH, "C");
+        Draft.Block d = Draft.Block.text(Draft.Block.PARAGRAPH, "D");
+        Draft source = first.withContent(first.title(), List.of(a, b, c, d));
+        Draft grouped = source.group(Set.of(c.id(), a.id()), "Hidden heading", 1);
+        check(grouped.blocks().equals(List.of(a, c, b, d)), "group keeps original relative order");
+        check(!grouped.canGroup(Set.of(a.id(), b.id())), "cannot nest grouped cards");
+        check(Draft.fromJson(grouped.toJson()).equals(grouped), "group and color round-trip");
+        check(Article.render(grouped, true).equals(Article.render(source.withContent(source.title(),
+                List.of(a, c, b, d)), true)), "output ignores group metadata");
+        Draft moved = grouped.moveSection(0, 2);
+        check(moved.blocks().equals(List.of(b, d, a, c)), "entire group moves");
+        Draft reordered = moved.moveInside(moved.sections().get(2), 1, 0);
+        check(reordered.blocks().equals(List.of(b, d, c, a)), "group members reorder in place");
+        Draft dissolved = reordered.ungroup(reordered.groups().get(0));
+        check(dissolved.groups().isEmpty() && dissolved.blocks().equals(reordered.blocks()), "ungroup retains order");
+        check(grouped.withContent(grouped.title(), List.of(b, d)).groups().isEmpty(), "empty group removed");
+
+        Draft manual = source.withManualLock(true);
+        check(manual.sensitive() && !manual.containsPrivateBlocks(), "manual lock alone");
+        check(Draft.fromJson(manual.toJson()).equals(manual), "manual lock round-trip");
+        Draft privateOnly = manual.withContent(manual.title(), List.of(a.protect(), b)).withManualLock(false);
+        check(privateOnly.sensitive() && !privateOnly.manualLock(), "private block overrides manual toggle");
+        check(!privateOnly.withContent(privateOnly.title(), List.of(b)).sensitive(), "remove final private block");
+        check(manual.withContent(manual.title(), List.of(b)).sensitive(), "manual lock survives block removal");
+        JSONObject legacy = source.toJson();
+        legacy.remove("manualLock");
+        legacy.remove("groups");
+        check(Draft.fromJson(legacy).equals(source), "legacy ungrouped draft opens unchanged");
+    }
+
+    private void workspace(Vault vault, String marker) throws Exception {
+        String name = "串聯驗收 " + marker.substring(0, 8);
+        Draft draft = vault.createDraft(name);
+        MainActivity ui = null;
+        try {
+            ArrayList<Draft.Block> blocks = new ArrayList<>();
+            for (int index = 0; index < 10; index++) {
+                blocks.add(Draft.Block.text(Draft.Block.PARAGRAPH, "排序項目 " + index));
+            }
+            vault.updateDraft(draft, draft.withContent(name, blocks));
+            ui = (MainActivity) startActivitySync(new Intent(getTargetContext(), MainActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            MainActivity activity = ui;
+            await(() -> onMain(() -> activity.canAct() && button(root(activity), "拼報") != null), "home");
+            onMain(() -> button(root(activity), "拼報").performClick());
+            await(() -> onMain(() -> activity.canAct() && named(root(activity), name) != null), "workspace shelf");
+            onMain(() -> button((View) named(root(activity), name).getParent(), "開啟").performClick());
+            await(() -> onMain(() -> activity.canAct() && named(root(activity), "排序項目 2") != null), "workspace editor");
+            ScrollView content = onMain(() -> (ScrollView) find(root(activity), v -> v instanceof ScrollView));
+            Point export = onMain(() -> center(action(activity, "匯出 ZIP")));
+            runOnMainSync(() -> content.scrollTo(0, 200));
+            check(onMain(() -> content.getScrollY() > 0 && export.equals(center(action(activity, "匯出 ZIP")))),
+                    "export stays in sticky toolbar");
+            runOnMainSync(() -> content.scrollTo(0, 0));
+
+            onMain(() -> action(activity, "純內文").performClick());
+            await(() -> onMain(() -> action(activity, "回到編輯") != null && activity.canAct()), "reading mode");
+            check(onMain(() -> named(root(activity), "排序項目 2") != null
+                    && button(root(activity), "排序") == null && action(activity, "預覽全文") != null),
+                    "reading mode retains content and output actions");
+            onMain(() -> action(activity, "回到編輯").performClick());
+            await(() -> onMain(() -> button(root(activity), "排序") != null), "editing restored");
+
+            onMain(() -> card(activity, 0).performLongClick());
+            onMain(() -> card(activity, 2).performClick());
+            check(onMain(() -> named(root(activity), "已選 2 張") != null), "selection count");
+            onMain(() -> action(activity, "串聯選取卡片").performClick());
+            runOnMainSync(() -> {
+                AlertDialog dialog = dialog(activity);
+                EditText input = (EditText) find(dialog.getWindow().getDecorView(), v -> v instanceof EditText);
+                input.setText("驗收串聯");
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            });
+            await(() -> storedOrder(vault, draft.id(), blocks.get(0), blocks.get(2))
+                    && onMain(() -> activity.canAct()
+                    && action(activity, "串聯選項 驗收串聯") != null), "group created");
+            Point heading = onMain(() -> center(action(activity, "排序串聯 驗收串聯，拖曳可移動整組")));
+            Point after = onMain(() -> lowerPart(card(activity, 1), heading.x()));
+            long drag = startDrag(heading, after);
+            dragEvent(drag, MotionEvent.ACTION_UP, after);
+            await(() -> storedOrder(vault, draft.id(), blocks.get(1), blocks.get(0)) && onMain(activity::canAct),
+                    "move whole group past outside card");
+
+            Point inner = onMain(() -> center(button(card(activity, 2), "排序")));
+            Point before = onMain(() -> {
+                View card = card(activity, 0);
+                return new Point(inner.x(), center(card).y() - card.getHeight() / 4f);
+            });
+            drag = startDrag(inner, before);
+            dragEvent(drag, MotionEvent.ACTION_UP, before);
+            await(() -> storedOrder(vault, draft.id(), blocks.get(1), blocks.get(2)) && onMain(activity::canAct),
+                    "member moves inside group");
+
+            Point inside = onMain(() -> center(button(card(activity, 0), "排序")));
+            Point outside = onMain(() -> lowerPart(card(activity, 1), inside.x()));
+            drag = startDrag(inside, outside);
+            dragEvent(drag, MotionEvent.ACTION_UP, outside);
+            await(() -> onMain(() -> card(activity, 0).getAlpha() == 1f), "outside group drop finishes");
+            check(storedOrder(vault, draft.id(), blocks.get(1), blocks.get(2)), "member cannot leave group");
+
+            onMain(() -> card(activity, 0).performLongClick());
+            onMain(() -> card(activity, 1).performClick());
+            onMain(() -> action(activity, "刪除選取卡片").performClick());
+            runOnMainSync(() -> dialog(activity).getButton(AlertDialog.BUTTON_POSITIVE).performClick());
+            await(() -> storedOrder(vault, draft.id(), blocks.get(2), blocks.get(3)) && onMain(activity::canAct),
+                    "batch delete removes only selected cards");
+        } finally {
+            if (ui != null) {
+                MainActivity activity = ui;
+                runOnMainSync(activity::finish);
+            }
+            vault.deleteDraft(vault.draft(draft.id()));
+        }
+    }
+
+    private static AlertDialog dialog(MainActivity activity) {
+        try {
+            java.lang.reflect.Field field = MainActivity.class.getDeclaredField("dialog");
+            field.setAccessible(true);
+            return (AlertDialog) field.get(activity);
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError(failure);
+        }
+    }
+
+    private static Point lowerPart(View card, float x) {
+        return new Point(x, center(card).y() + card.getHeight() / 4f);
+    }
+
+    private static View action(Activity activity, String description) {
+        return find(root(activity), view -> view.getContentDescription() != null
+                && description.contentEquals(view.getContentDescription()));
     }
 
     private void reorder(Vault vault, String marker) throws Exception {

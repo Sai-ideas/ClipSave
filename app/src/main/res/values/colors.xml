@@ -10,4 +10,7 @@
     <color name="vault_on_accent">#FFFFFF</color>
     <color name="vault_ripple">#245840AA</color>
     <bool name="vault_light_bars">true</bool>
+    <color name="pinbao_group_blue">#315B91</color>
+    <color name="pinbao_group_green">#376C52</color>
+    <color name="pinbao_group_amber">#835522</color>
 </resources>

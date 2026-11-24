@@ -17,6 +17,8 @@ final class DraftReorder {
     private final BooleanSupplier canStart;
     private final BiConsumer<Integer, Integer> move;
     private final ArrayList<View> cards = new ArrayList<>();
+    private final int[] scrollLocation = new int[2];
+    private final int[] scopeLocation = new int[2];
     private final GradientDrawable insertionLine = new GradientDrawable();
     private final int slop;
     private final int edge;
@@ -31,10 +33,10 @@ final class DraftReorder {
 
     private record Drag(DraftReorder owner, int origin) {}
 
-    DraftReorder(View page, BooleanSupplier canStart, BiConsumer<Integer, Integer> move,
+    DraftReorder(ScrollView scroll, View page, BooleanSupplier canStart, BiConsumer<Integer, Integer> move,
                  int cardGap, int accent) {
         this.page = page;
-        scroll = (ScrollView) page.getParent();
+        this.scroll = scroll;
         this.canStart = canStart;
         this.move = move;
         float density = page.getResources().getDisplayMetrics().density;
@@ -45,7 +47,11 @@ final class DraftReorder {
         insertionLine.setColor(accent);
         insertionLine.setCornerRadius(lineHeight / 2f);
         slop = ViewConfiguration.get(scroll.getContext()).getScaledTouchSlop();
-        scroll.setOnDragListener((view, event) -> handleDrag(event));
+    }
+
+    static void routeEvents(ScrollView scroll) {
+        scroll.setOnDragListener((view, event) -> event.getLocalState() instanceof Drag drag
+                && drag.owner().scroll == scroll && drag.owner().handleDrag(event, drag));
     }
 
     void addCard(View card, View handle) {
@@ -82,8 +88,7 @@ final class DraftReorder {
         });
     }
 
-    private boolean handleDrag(DragEvent event) {
-        if (!(event.getLocalState() instanceof Drag drag) || drag.owner() != this) return false;
+    private boolean handleDrag(DragEvent event, Drag drag) {
         switch (event.getAction()) {
             case DragEvent.ACTION_DRAG_STARTED -> {
                 origin = drag.origin();
@@ -121,8 +126,10 @@ final class DraftReorder {
     }
 
     private int slotAt(float x, float y) {
-        float pageX = x + scroll.getScrollX() - page.getLeft();
-        float pageY = y + scroll.getScrollY() - page.getTop();
+        scroll.getLocationInWindow(scrollLocation);
+        page.getLocationInWindow(scopeLocation);
+        float pageX = x + scrollLocation[0] - scopeLocation[0];
+        float pageY = y + scrollLocation[1] - scopeLocation[1];
         View first = cards.get(0);
         View last = cards.get(cards.size() - 1);
         if (pageX < first.getLeft() || pageX >= first.getRight()
