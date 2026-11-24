@@ -241,7 +241,7 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams identityLayout = new LinearLayout.LayoutParams(0, -2, 1);
         identityLayout.setMarginStart(dp(12));
         header.addView(identity, identityLayout);
-        header.addView(button("草稿", surfaceSoft, accent, workspace::openShelf));
+        header.addView(button("拼報", surfaceSoft, accent, workspace::openShelf));
         LinearLayout.LayoutParams settingsLayout = new LinearLayout.LayoutParams(-2, -2);
         settingsLayout.setMarginStart(dp(6));
         header.addView(button("設定", surfaceSoft, accent, this::settings), settingsLayout);
@@ -770,7 +770,7 @@ public final class MainActivity extends Activity {
         if (busy) return;
         ArrayList<String> options = new ArrayList<>(Arrays.asList("置頂、收藏與標籤", "分享", "刪除"));
         String type = entry.type();
-        if (!type.equals("PDF")) options.add("加入草稿");
+        if (!type.equals("PDF")) options.add("加入拼報");
         boolean waiting = reading.contains(entry.id());
         if (type.equals("連結")) {
             options.add("開啟網址");
@@ -865,7 +865,7 @@ public final class MainActivity extends Activity {
                                 preferences.edit().putBoolean("lock", false).apply();
                                 toast("已關閉離開時上鎖。");
                             });
-                    if (which == 2) confirm("刪除所有剪輯", "歷史清單中的文字與附件會移除，包含置頂與收藏。草稿內的副本會保留。", "全部刪除",
+                    if (which == 2) confirm("刪除所有剪輯", "歷史清單中的文字與附件會移除，包含置頂與收藏。拼報內的副本會保留。", "全部刪除",
                             () -> mutate(() -> { vault.clear(); return null; }, "已清除剪存的資料"));
                 })
                 .setNegativeButton("關閉", null));

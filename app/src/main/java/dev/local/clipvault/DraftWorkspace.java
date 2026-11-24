@@ -31,6 +31,7 @@ import java.util.function.Function;
 
 final class DraftWorkspace {
     static final int EXPORT_REQUEST = 14;
+    private static final int BLOCK_SPACING = 10;
 
     private final MainActivity activity;
     private final Vault vault;
@@ -84,14 +85,14 @@ final class DraftWorkspace {
         if (!activity.canAct()) return;
         reloadShelf = false;
         renderShelf(Collections.emptyList(), "讀取中…");
-        activity.run(vault::drafts, drafts -> renderShelf(drafts, "還沒有草稿。"),
-                () -> renderShelf(Collections.emptyList(), "無法讀取草稿，請返回後重試。"));
+        activity.run(vault::drafts, drafts -> renderShelf(drafts, "還沒有拼報。"),
+                () -> renderShelf(Collections.emptyList(), "無法讀取拼報，請返回後重試。"));
     }
 
     private void renderShelf(List<Draft> drafts, String empty) {
         current = null;
-        buildPage("文章草稿", "剪輯", activity::openClips);
-        add(largeButton("新增草稿", () -> editText("新增草稿", "輸入文章標題", "", Draft.MAX_TITLE,
+        buildPage("拼報", "剪輯", activity::openClips);
+        add(largeButton("新增拼報", () -> editText("新增拼報", "輸入拼報標題", "", Draft.MAX_TITLE,
                 false, title -> activity.runForeground(() -> vault.createDraft(title), this::renderDraft))), 12);
         if (drafts.isEmpty()) {
             add(activity.text(empty, 15, muted, false), 16);
@@ -111,10 +112,10 @@ final class DraftWorkspace {
     }
 
     private void open(Draft draft) {
-        activity.authorize(draft.sensitive(), "開啟私密草稿",
+        activity.authorize(draft.sensitive(), "開啟私密拼報",
                 () -> activity.runForeground(() -> {
                     Draft stored = vault.draft(draft.id());
-                    if (stored.sensitive() && !draft.sensitive()) throw new Vault.Limit("請重新開啟私密草稿。");
+                    if (stored.sensitive() && !draft.sensitive()) throw new Vault.Limit("請重新開啟私密拼報。");
                     return stored;
                 }, this::renderDraft));
     }
@@ -123,10 +124,10 @@ final class DraftWorkspace {
         if (!activity.canAct()) return;
         activity.runForeground(vault::drafts, drafts -> {
             if (drafts.isEmpty()) {
-                activity.confirm("還沒有草稿", "先建立一篇草稿，再插入這張卡片。", "前往草稿", this::openShelf);
+                activity.confirm("還沒有拼報", "先建立一份拼報，再插入這張卡片。", "前往拼報", this::openShelf);
                 return;
             }
-            activity.show(new AlertDialog.Builder(activity).setTitle("加入草稿")
+            activity.show(new AlertDialog.Builder(activity).setTitle("加入拼報")
                     .setItems(drafts.stream().map(DraftWorkspace::displayName).toArray(String[]::new),
                             (dialog, which) -> insert(drafts.get(which), Collections.singletonList(entry)))
                     .setNegativeButton("取消", null));
@@ -136,7 +137,7 @@ final class DraftWorkspace {
     private void pickClip(Draft draft) {
         int remaining = Draft.MAX_BLOCKS - draft.blocks().size();
         if (remaining <= 0) {
-            activity.toast("每篇草稿最多 " + Draft.MAX_BLOCKS + " 個區塊。");
+            activity.toast("每份拼報最多 " + Draft.MAX_BLOCKS + " 個區塊。");
             return;
         }
         activity.runForeground(vault::list, entries -> {
@@ -145,7 +146,7 @@ final class DraftWorkspace {
                 if (!entry.attachment() || Vault.supportsAttachment(entry.mime())) available.add(entry);
             }
             if (available.isEmpty()) {
-                activity.toast("先收錄文字、網址或圖片，再插入草稿。");
+                activity.toast("先收錄文字、網址或圖片，再插入拼報。");
                 return;
             }
             showClipSelection(draft, available, remaining);
@@ -206,10 +207,10 @@ final class DraftWorkspace {
                 ? (ScrollView) page.getParent() : null;
         int offset = scroll == null ? 0 : scroll.getScrollY();
         current = draft;
-        buildPage(draft.title(), "草稿", this::openShelf);
+        buildPage(draft.title(), "拼報", this::openShelf);
 
         LinearLayout management = activity.row();
-        addAction(management, "重新命名", () -> editText("重新命名", "輸入文章標題", draft.title(),
+        addAction(management, "重新命名", () -> editText("重新命名", "輸入拼報標題", draft.title(),
                 Draft.MAX_TITLE, false, title -> update(draft, title, draft.blocks())));
         addDeleteAction(management, draft);
         add(management, 10);
@@ -219,13 +220,13 @@ final class DraftWorkspace {
         addAction(authoring, "新增區塊", () -> chooseBlockKind(draft));
         add(authoring, 10);
 
-        DraftReorder reorder = new DraftReorder((ScrollView) page.getParent(), activity::canAct,
-                (from, to) -> moveBlock(draft, from, to), activity.dp(60), activity.dp(9));
+        DraftReorder reorder = new DraftReorder(page, activity::canAct,
+                (from, to) -> moveBlock(draft, from, to), activity.dp(BLOCK_SPACING), accent);
         if (draft.blocks().isEmpty()) {
             add(activity.text("插入素材或寫一段文字開始。", 15, muted, false), 16);
         } else {
             for (int index = 0; index < draft.blocks().size(); index++) {
-                add(blockCard(draft, index, reorder), 10);
+                add(blockCard(draft, index, reorder), BLOCK_SPACING);
             }
         }
         LinearLayout output = activity.row();
@@ -387,7 +388,7 @@ final class DraftWorkspace {
     }
 
     private void removeBlock(Draft draft, int index) {
-        activity.confirm("移除區塊", "這個區塊將從草稿移除。", "移除", () -> {
+        activity.confirm("移除區塊", "這個區塊將從拼報移除。", "移除", () -> {
             ArrayList<Draft.Block> blocks = new ArrayList<>(draft.blocks());
             blocks.remove(index);
             update(draft, draft.title(), blocks);
@@ -395,28 +396,28 @@ final class DraftWorkspace {
     }
 
     private void addDeleteAction(LinearLayout actions, Draft draft) {
-        Button delete = addAction(actions, "刪除草稿", () -> requestDelete(draft));
+        Button delete = addAction(actions, "刪除拼報", () -> requestDelete(draft));
         delete.setTextColor(danger);
-        delete.setContentDescription("刪除草稿 " + displayName(draft));
+        delete.setContentDescription("刪除拼報 " + displayName(draft));
     }
 
     private void requestDelete(Draft draft) {
-        activity.authorize(draft.sensitive(), "驗證後刪除私密草稿", () -> activity.runForeground(() -> {
+        activity.authorize(draft.sensitive(), "驗證後刪除私密拼報", () -> activity.runForeground(() -> {
             Draft stored = vault.draft(draft.id());
             if (stored.sensitive() && !draft.sensitive()) {
-                throw new Vault.Limit("草稿已改為私密，請重新開啟草稿清單。");
+                throw new Vault.Limit("拼報已改為私密，請重新開啟拼報清單。");
             }
             return new DeleteTarget(stored, vault.drafts());
         }, target -> {
-            if (!active) renderShelf(target.shelf(), "還沒有草稿。");
+            if (!active) renderShelf(target.shelf(), "還沒有拼報。");
             Draft stored = target.draft();
-            activity.confirm("刪除草稿", "將永久刪除「" + stored.title() + "」和其中的區塊。來源剪輯會保留。",
-                    "刪除草稿", () -> activity.run(() -> {
+            activity.confirm("刪除拼報", "將永久刪除「" + stored.title() + "」和其中的區塊。來源剪輯會保留。",
+                    "刪除拼報", () -> activity.run(() -> {
                         vault.deleteDraft(stored);
                         return vault.drafts();
                     }, drafts -> {
-                        renderShelf(drafts, "還沒有草稿。");
-                        activity.toast("已刪除草稿。");
+                        renderShelf(drafts, "還沒有拼報。");
+                        activity.toast("已刪除拼報。");
                     }, null), stored.sensitive());
         }));
     }
@@ -457,7 +458,7 @@ final class DraftWorkspace {
                     ImageView view = new ImageView(activity);
                     view.setImageBitmap(image);
                     view.setAdjustViewBounds(true);
-                    view.setContentDescription("草稿圖片");
+                    view.setContentDescription("拼報圖片");
                     body.addView(view, activity.margins(-1, -2, 12, 0));
                 } else {
                     View text = block.image() ? activity.text(block.content(), 16, ink, false) : textBlock(block);
@@ -472,7 +473,7 @@ final class DraftWorkspace {
     private void copy(Draft draft) {
         Runnable copy = () -> activity.copyArticle("剪存文章", Article.render(draft, false));
         if (draft.sensitive()) {
-            activity.confirm("複製私密草稿", "全文會寫入系統剪貼簿，可貼到其他 App。", "複製", copy);
+            activity.confirm("複製私密拼報", "全文會寫入系統剪貼簿，可貼到其他 App。", "複製", copy);
         } else {
             copy.run();
         }
@@ -515,7 +516,7 @@ final class DraftWorkspace {
         activity.run(() -> {
             Draft draft = vault.draft(selected.id());
             if (draft.updatedAt() != selected.updatedAt() || draft.sensitive() != selected.sensitive()) {
-                throw new Vault.Limit("草稿已變更，請重新匯出。");
+                throw new Vault.Limit("拼報已變更，請重新匯出。");
             }
             try (OutputStream output = activity.getContentResolver().openOutputStream(selected.location(), "wt")) {
                 if (output == null) throw new Vault.Limit("無法寫入匯出位置。");
@@ -526,7 +527,7 @@ final class DraftWorkspace {
     }
 
     private static String displayName(Draft draft) {
-        return draft.sensitive() ? "私密草稿" : draft.title();
+        return draft.sensitive() ? "私密拼報" : draft.title();
     }
 
     private static String clipLabel(Vault.Entry entry) {

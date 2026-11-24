@@ -1,6 +1,6 @@
 package dev.local.clipvault;
 
-import android.graphics.Rect;
+import android.graphics.drawable.GradientDrawable;
 import android.view.DragEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -13,13 +13,16 @@ import java.util.function.BooleanSupplier;
 
 final class DraftReorder {
     private final ScrollView scroll;
+    private final View page;
     private final BooleanSupplier canStart;
     private final BiConsumer<Integer, Integer> move;
     private final ArrayList<View> cards = new ArrayList<>();
-    private final Rect bounds = new Rect();
+    private final GradientDrawable insertionLine = new GradientDrawable();
     private final int slop;
     private final int edge;
     private final int step;
+    private final int halfGap;
+    private final int lineHeight;
     private int origin = -1;
     private int target = -1;
     private float pointerX;
@@ -28,13 +31,19 @@ final class DraftReorder {
 
     private record Drag(DraftReorder owner, int origin) {}
 
-    DraftReorder(ScrollView scroll, BooleanSupplier canStart, BiConsumer<Integer, Integer> move,
-                 int edge, int step) {
-        this.scroll = scroll;
+    DraftReorder(View page, BooleanSupplier canStart, BiConsumer<Integer, Integer> move,
+                 int cardGap, int accent) {
+        this.page = page;
+        scroll = (ScrollView) page.getParent();
         this.canStart = canStart;
         this.move = move;
-        this.edge = edge;
-        this.step = step;
+        float density = page.getResources().getDisplayMetrics().density;
+        edge = Math.round(density * 60);
+        step = Math.round(density * 9);
+        halfGap = cardGap / 2;
+        lineHeight = Math.round(density * 5);
+        insertionLine.setColor(accent);
+        insertionLine.setCornerRadius(lineHeight / 2f);
         slop = ViewConfiguration.get(scroll.getContext()).getScaledTouchSlop();
         scroll.setOnDragListener((view, event) -> handleDrag(event));
     }
@@ -76,28 +85,34 @@ final class DraftReorder {
     private boolean handleDrag(DragEvent event) {
         if (!(event.getLocalState() instanceof Drag drag) || drag.owner() != this) return false;
         switch (event.getAction()) {
-            case DragEvent.ACTION_DRAG_STARTED -> origin = drag.origin();
+            case DragEvent.ACTION_DRAG_STARTED -> {
+                origin = drag.origin();
+                cards.get(origin).setAlpha(0.55f);
+            }
             case DragEvent.ACTION_DRAG_LOCATION -> {
                 pointerX = event.getX();
                 pointerY = event.getY();
-                highlight(targetAt(pointerX, pointerY));
+                showInsertionLine(slotAt(pointerX, pointerY));
                 scroll.removeCallbacks(autoScroll);
                 if (scrollDirection() != 0) scroll.postOnAnimation(autoScroll);
             }
             case DragEvent.ACTION_DRAG_EXITED -> {
                 scroll.removeCallbacks(autoScroll);
-                highlight(-1);
+                showInsertionLine(-1);
             }
             case DragEvent.ACTION_DROP -> {
-                int destination = targetAt(event.getX(), event.getY());
+                int slot = slotAt(event.getX(), event.getY());
                 scroll.removeCallbacks(autoScroll);
-                highlight(-1);
-                if (destination < 0) return false;
+                showInsertionLine(-1);
+                if (slot < 0) return false;
+                // Removing the source shifts every slot after it one position earlier.
+                int destination = slot <= origin ? slot : slot - 1;
                 if (origin >= 0 && origin != destination && canStart.getAsBoolean()) move.accept(origin, destination);
             }
             case DragEvent.ACTION_DRAG_ENDED -> {
                 scroll.removeCallbacks(autoScroll);
-                highlight(-1);
+                showInsertionLine(-1);
+                if (origin >= 0) cards.get(origin).setAlpha(1f);
                 origin = -1;
             }
             default -> {}
@@ -105,15 +120,18 @@ final class DraftReorder {
         return true;
     }
 
-    private int targetAt(float x, float y) {
-        int contentY = (int) y + scroll.getScrollY();
+    private int slotAt(float x, float y) {
+        float pageX = x + scroll.getScrollX() - page.getLeft();
+        float pageY = y + scroll.getScrollY() - page.getTop();
+        View first = cards.get(0);
+        View last = cards.get(cards.size() - 1);
+        if (pageX < first.getLeft() || pageX >= first.getRight()
+                || pageY < first.getTop() - halfGap || pageY > last.getBottom() + halfGap) return -1;
         for (int index = 0; index < cards.size(); index++) {
             View card = cards.get(index);
-            bounds.set(0, 0, card.getWidth(), card.getHeight());
-            scroll.offsetDescendantRectToMyCoords(card, bounds);
-            if (bounds.contains((int) x, contentY)) return index;
+            if (pageY < card.getTop() + card.getHeight() / 2f) return index;
         }
-        return -1;
+        return cards.size();
     }
 
     private int scrollDirection() {
@@ -127,14 +145,25 @@ final class DraftReorder {
         int direction = scrollDirection();
         if (origin < 0 || direction == 0 || !scroll.isAttachedToWindow()) return;
         scroll.scrollBy(0, step * direction);
-        highlight(targetAt(pointerX, pointerY));
+        showInsertionLine(slotAt(pointerX, pointerY));
         if (scrollDirection() != 0) scroll.postOnAnimation(autoScroll);
     }
 
-    private void highlight(int index) {
-        if (index == target) return;
-        if (target >= 0) cards.get(target).setAlpha(1f);
-        target = index;
-        if (target >= 0 && target != origin) cards.get(target).setAlpha(0.65f);
+    private void showInsertionLine(int slot) {
+        if (slot == target) return;
+        page.getOverlay().remove(insertionLine);
+        target = slot;
+        if (slot < 0 || slot == origin || slot == origin + 1) return;
+
+        View before = slot == 0 ? null : cards.get(slot - 1);
+        View after = slot == cards.size() ? null : cards.get(slot);
+        int center;
+        if (before == null) center = after.getTop() - halfGap;
+        else if (after == null) center = before.getBottom() + halfGap;
+        else center = (before.getBottom() + after.getTop()) / 2;
+        int top = center - lineHeight / 2;
+        View first = cards.get(0);
+        insertionLine.setBounds(first.getLeft(), top, first.getRight(), top + lineHeight);
+        page.getOverlay().add(insertionLine);
     }
 }

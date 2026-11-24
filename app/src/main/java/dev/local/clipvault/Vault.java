@@ -258,12 +258,12 @@ final class Vault {
         for (Draft draft : drafts) {
             if (draft.id().equals(id)) return draft;
         }
-        throw new Limit("這篇草稿已不存在。");
+        throw new Limit("這份拼報已不存在。");
     }
 
     synchronized Draft createDraft(String title) throws Exception {
         load();
-        if (drafts.size() >= MAX_DRAFTS) throw new Limit("草稿已達 30 篇。");
+        if (drafts.size() >= MAX_DRAFTS) throw new Limit("拼報已達 30 篇。");
         Draft draft = Draft.create(title);
         ArrayList<Draft> next = new ArrayList<>(drafts);
         next.add(draft);
@@ -273,15 +273,15 @@ final class Vault {
 
     synchronized Draft updateDraft(Draft original, Draft changed) throws Exception {
         Draft current = draft(original.id());
-        if (!current.equals(original)) throw new Limit("草稿已有變更，請重新開啟。");
-        if (changed.blocks().size() > Draft.MAX_BLOCKS) throw new Limit("每篇草稿最多 50 個區塊。");
+        if (!current.equals(original)) throw new Limit("拼報已有變更，請重新開啟。");
+        if (changed.blocks().size() > Draft.MAX_BLOCKS) throw new Limit("每份拼報最多 50 個區塊。");
         int size = changed.blocks().stream().mapToInt(block -> block.content().length()).sum();
         for (Draft draft : drafts) {
             if (!draft.id().equals(current.id())) {
                 size += draft.blocks().stream().mapToInt(block -> block.content().length()).sum();
             }
         }
-        if (size > MAX_DRAFT_TEXT) throw new Limit("草稿總文字量已達上限。");
+        if (size > MAX_DRAFT_TEXT) throw new Limit("拼報總文字量已達上限。");
         ArrayList<Draft> next = new ArrayList<>(drafts);
         next.set(next.indexOf(current), current.sensitive() ? changed.protect() : changed);
         commit(entries, retention, next);
@@ -292,14 +292,14 @@ final class Vault {
         Draft current = draft(draftId);
         if (entryIds.isEmpty()) return current;
         if (entryIds.size() > Draft.MAX_BLOCKS - current.blocks().size()) {
-            throw new Limit("每篇草稿最多 " + Draft.MAX_BLOCKS + " 個區塊。");
+            throw new Limit("每份拼報最多 " + Draft.MAX_BLOCKS + " 個區塊。");
         }
         ArrayList<Entry> sources = new ArrayList<>(entryIds.size());
         boolean sensitive = current.sensitive();
         for (String id : entryIds) {
             Entry source = entry(id);
             if (source.attachment() && !supportsAttachment(source.mime())) {
-                throw new Limit("草稿支援文字、網址與圖片。");
+                throw new Limit("拼報支援文字、網址與圖片。");
             }
             sources.add(source);
             sensitive |= source.sensitive();
@@ -313,7 +313,7 @@ final class Vault {
                 try {
                     Arrays.fill(attachmentData(source.id()), (byte) 0);
                 } catch (Exception error) {
-                    throw new Limit("有選取的圖片無法讀取，草稿保持原樣。");
+                    throw new Limit("有選取的圖片無法讀取，拼報保持原樣。");
                 }
             }
             blocks.add(Draft.Block.fromClip(source));
@@ -324,7 +324,7 @@ final class Vault {
 
     synchronized void deleteDraft(Draft confirmed) throws Exception {
         Draft current = draft(confirmed.id());
-        if (!current.equals(confirmed)) throw new Limit("草稿已有變更，請重新確認刪除。");
+        if (!current.equals(confirmed)) throw new Limit("拼報已有變更，請重新確認刪除。");
         ArrayList<Draft> next = new ArrayList<>(drafts);
         next.remove(current);
         commit(entries, retention, next);
@@ -332,7 +332,7 @@ final class Vault {
 
     synchronized byte[] draftImage(Draft draft, Draft.Block block) throws Exception {
         if (!draft(draft.id()).equals(draft) || !block.image() || !draft.blocks().contains(block)) {
-            throw new Limit("草稿圖片已變更，請重新開啟。");
+            throw new Limit("拼報圖片已變更，請重新開啟。");
         }
         return decrypt(new AtomicFile(file(block.sourceId())).readFully(), block.sourceId());
     }
