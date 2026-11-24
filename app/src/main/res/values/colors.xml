@@ -1,8 +1,8 @@
 <resources>
-    <color name="vault_background">#F5F4FA</color>
+    <color name="vault_background">#F8F7FB</color>
     <color name="vault_surface">#FFFFFF</color>
-    <color name="vault_surface_soft">#ECE9F6</color>
-    <color name="vault_outline">#DCD8EB</color>
+    <color name="vault_surface_soft">#EFEDF5</color>
+    <color name="vault_outline">#E4E1EA</color>
     <color name="vault_text">#201C32</color>
     <color name="vault_secondary_text">#625C73</color>
     <color name="vault_accent">#5840AA</color>

@@ -234,35 +234,26 @@ public final class MainActivity extends Activity {
         LinearLayout page = newPage();
 
         LinearLayout header = row();
-        header.addView(iconBadge(R.drawable.ic_clip, 48));
-        LinearLayout identity = column();
-        identity.addView(text("剪存", 30, ink, true));
-        identity.addView(text("本機剪貼簿", 14, muted, false));
+        header.addView(iconBadge(R.drawable.ic_clip, 40));
+        TextView identity = text("剪存", 26, ink, true);
+        identity.setAccessibilityHeading(true);
         LinearLayout.LayoutParams identityLayout = new LinearLayout.LayoutParams(0, -2, 1);
         identityLayout.setMarginStart(dp(12));
         header.addView(identity, identityLayout);
-        header.addView(button("拼報", surfaceSoft, accent, workspace::openShelf));
         LinearLayout.LayoutParams settingsLayout = new LinearLayout.LayoutParams(-2, -2);
         settingsLayout.setMarginStart(dp(6));
         header.addView(button("設定", surfaceSoft, accent, this::settings), settingsLayout);
         page.addView(header, margins(-1, -2, 0, 18));
 
-        LinearLayout hero = column();
-        hero.setBackground(panel(22));
-        hero.setPadding(dp(16), dp(16), dp(16), dp(16));
-        hero.addView(text("收錄剪輯", 21, ink, true));
-        hero.addView(text("收錄文字、網址與圖片。", 14, muted, false),
-                margins(-1, -2, 5, 12));
-        hero.addView(button("儲存目前剪貼簿", accent, onAccent, this::captureClipboard),
-                new LinearLayout.LayoutParams(-1, dp(48)));
+        page.addView(button("儲存目前剪貼簿", accent, onAccent, this::captureClipboard),
+                new LinearLayout.LayoutParams(-1, -2));
         LinearLayout actions = row();
         actions.addView(button("新增文字", surfaceSoft, accent, this::addText),
-                new LinearLayout.LayoutParams(0, dp(48), 1));
-        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, dp(48), 1);
-        right.leftMargin = dp(8);
+                new LinearLayout.LayoutParams(0, -2, 1));
+        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, -2, 1);
+        right.setMarginStart(dp(8));
         actions.addView(button("匯入圖片", surfaceSoft, accent, this::pickFile), right);
-        hero.addView(actions, margins(-1, -2, 8, 0));
-        page.addView(hero);
+        page.addView(actions, margins(-1, -2, 8, 0));
 
         EditText input = new EditText(this);
         input.setSingleLine(true);
@@ -332,10 +323,10 @@ public final class MainActivity extends Activity {
     }
 
     LinearLayout newPage() {
-        return newPage(null);
+        return newPage(null, false);
     }
 
-    LinearLayout newPage(View toolbar) {
+    LinearLayout newPage(View toolbar, boolean pinbao) {
         startScreen();
         if (toolbar != null) root.addView(toolbar, new LinearLayout.LayoutParams(-1, -2));
         ScrollView scroll = new ScrollView(this);
@@ -344,7 +335,34 @@ public final class MainActivity extends Activity {
         LinearLayout page = column();
         page.setPadding(dp(20), dp(12), dp(20), dp(24));
         scroll.addView(page, new ScrollView.LayoutParams(-1, -2));
+        root.addView(destinationBar(pinbao), new LinearLayout.LayoutParams(-1, -2));
         return page;
+    }
+
+    private LinearLayout destinationBar(boolean pinbao) {
+        LinearLayout bar = column();
+        bar.setBackgroundColor(surface);
+        View divider = new View(this);
+        divider.setBackgroundColor(outline);
+        bar.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
+        LinearLayout destinations = row();
+        destinations.setPadding(dp(12), dp(4), dp(12), dp(4));
+        addDestination(destinations, "剪輯", !pinbao, workspace::switchToClips);
+        addDestination(destinations, "拼報", pinbao, workspace::switchToPinbao);
+        bar.addView(destinations);
+        return bar;
+    }
+
+    private void addDestination(LinearLayout row, String label, boolean selected, Runnable navigate) {
+        Button destination = button(label, selected ? surfaceSoft : Color.TRANSPARENT,
+                selected ? accent : ink, () -> {
+                    if (!selected && canAct()) navigate.run();
+                });
+        destination.setSelected(selected);
+        destination.setContentDescription(label);
+        LinearLayout.LayoutParams layout = new LinearLayout.LayoutParams(0, -2, 1);
+        if (row.getChildCount() > 0) layout.setMarginStart(dp(8));
+        row.addView(destination, layout);
     }
 
     private void startScreen() {
@@ -1290,7 +1308,7 @@ public final class MainActivity extends Activity {
 
     private RippleDrawable buttonBackground(int color, int radius) {
         return new RippleDrawable(ColorStateList.valueOf(color == accent ? 0x36000000 : ripple),
-                shape(color, radius), null);
+                shape(color, radius), color == Color.TRANSPARENT ? shape(Color.WHITE, radius) : null);
     }
 
     LinearLayout.LayoutParams margins(int width, int height, int top, int bottom) {
