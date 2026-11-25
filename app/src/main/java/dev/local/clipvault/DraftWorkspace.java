@@ -1060,24 +1060,13 @@ final class DraftWorkspace {
     private void editText(String title, String hint, String value, int limit, boolean multiline,
                           Function<String, String> prepare, Consumer<String> done) {
         if (!activity.canAct()) return;
-        LinearLayout body = activity.dialogBody();
-        EditText input = activity.edit(hint, limit, multiline);
-        input.setText(value);
-        body.addView(input);
-        AlertDialog dialog = activity.show(new AlertDialog.Builder(activity).setTitle(title).setView(body)
-                .setPositiveButton("儲存", null).setNegativeButton("取消", null));
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
-            if (!activity.canAct()) return;
-            String text = input.getText().toString();
-            if (text.trim().isEmpty()) {
-                input.setError("請輸入文字");
-                return;
-            }
+        ContentEditor editor = new ContentEditor(activity, hint, value, limit, multiline);
+        editor.show(title, multiline, () -> current != null && current.sensitive(), () -> false, text -> {
             String prepared;
             try {
                 prepared = prepare.apply(multiline ? text : text.trim());
             } catch (IllegalArgumentException error) {
-                input.setError(error.getMessage());
+                editor.input.setError(error.getMessage());
                 return;
             }
             done.accept(prepared);
