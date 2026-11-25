@@ -350,9 +350,7 @@ final class DraftWorkspace {
             editorBar.removeAllViews();
             page.removeAllViews();
         } else {
-            editorBar = activity.column();
-            editorBar.setBackgroundColor(activity.getColor(R.color.vault_surface));
-            editorBar.setPadding(activity.dp(8), activity.dp(4), activity.dp(8), activity.dp(4));
+            editorBar = activity.toolbarContainer();
             page = activity.newPage(editorBar, true);
         }
         bindEditorToolbar(draft);
@@ -367,7 +365,7 @@ final class DraftWorkspace {
 
     private void bindEditorToolbar(Draft draft) {
         LinearLayout header = activity.row();
-        Button back = textControl("清單", "返回拼報清單", this::goBack);
+        Button back = activity.toolbarControl("清單", "返回拼報清單", this::goBack);
         back.setContentDescription("返回拼報清單");
         header.addView(back);
         LinearLayout identity = activity.column();
@@ -383,56 +381,37 @@ final class DraftWorkspace {
         LinearLayout.LayoutParams identityLayout = new LinearLayout.LayoutParams(0, -2, 1);
         identityLayout.setMarginStart(activity.dp(8));
         header.addView(identity, identityLayout);
-        Button options = textControl("設定", "拼報設定", () -> editorOptions(draft));
+        Button options = activity.toolbarControl("設定", "拼報設定", () -> editorOptions(draft));
         header.addView(options);
         editorBar.addView(header);
 
         LinearLayout actions = activity.row();
         if (selectedIds.isEmpty()) {
-            addToolbarAction(actions, "插入", "插入剪輯", 1, () -> pickClip(draft));
-            addToolbarAction(actions, "新增", "新增區塊", 1, () -> chooseBlockKind(draft));
+            activity.addToolbarAction(actions, "插入", "插入剪輯", 1, () -> pickClip(draft));
+            activity.addToolbarAction(actions, "新增", "新增區塊", 1, () -> chooseBlockKind(draft));
             String label = reading ? "詳細" : "精簡";
-            Button mode = addToolbarAction(actions, label, "切換為" + label + "模式", 1,
+            Button mode = activity.addToolbarAction(actions, label, "切換為" + label + "模式", 1,
                     () -> toggleReading(draft));
             mode.setSelected(reading);
             if (reading) mode.setTextColor(accent);
-            addToolbarAction(actions, "預覽", "預覽全文", 1, () -> preview(draft));
-            addToolbarAction(actions, "複製", "複製全文", 1, () -> copy(draft));
-            addToolbarAction(actions, "匯出", "匯出 ZIP", 1, () -> export(draft));
+            activity.addToolbarAction(actions, "預覽", "預覽全文", 1, () -> preview(draft));
+            activity.addToolbarAction(actions, "複製", "複製全文", 1, () -> copy(draft));
+            activity.addToolbarAction(actions, "匯出", "匯出 ZIP", 1, () -> export(draft));
         } else {
             TextView count = activity.text("已選 " + selectedIds.size() + " 張", 14, ink, true);
             count.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
             actions.addView(count, new LinearLayout.LayoutParams(0, -2, 1.2f));
-            addToolbarAction(actions, "取消", "退出多選", 1, () -> {
+            activity.addToolbarAction(actions, "取消", "退出多選", 1, () -> {
                 selectedIds.clear();
                 renderDraft(draft);
             });
-            Button group = addToolbarAction(actions, "串聯", "串聯選取卡片", 1, () -> createGroup(draft));
+            Button group = activity.addToolbarAction(actions, "串聯", "串聯選取卡片", 1, () -> createGroup(draft));
             group.setEnabled(draft.canGroup(selectedIds));
             if (!group.isEnabled()) group.setAlpha(0.5f);
-            Button delete = addToolbarAction(actions, "刪除", "刪除選取卡片", 1, () -> deleteSelected(draft));
+            Button delete = activity.addToolbarAction(actions, "刪除", "刪除選取卡片", 1, () -> deleteSelected(draft));
             delete.setTextColor(danger);
         }
         editorBar.addView(actions);
-    }
-
-    private Button textControl(String label, String description, Runnable action) {
-        Button button = activity.button(label, Color.TRANSPARENT, ink, () -> {
-            if (activity.canAct()) action.run();
-        });
-        button.setTextSize(13);
-        button.setPadding(activity.dp(3), activity.dp(4), activity.dp(3), activity.dp(4));
-        button.setMinWidth(activity.dp(48));
-        button.setMinimumWidth(activity.dp(48));
-        button.setContentDescription(description);
-        return button;
-    }
-
-    private Button addToolbarAction(LinearLayout row, String label, String description, float weight,
-                                    Runnable action) {
-        Button control = textControl(label, description, action);
-        row.addView(control, new LinearLayout.LayoutParams(0, -2, weight));
-        return control;
     }
 
     private void editorOptions(Draft draft) {
@@ -501,11 +480,11 @@ final class DraftWorkspace {
             if (editing) {
                 outer.addCard(container, title);
                 header.addView(foldButton(!group.collapsed(), "串聯 " + group.title(), toggleFold));
-                header.addView(textControl("選項", "串聯選項 " + group.title(), () -> groupOptions(draft, group)));
+                header.addView(activity.toolbarControl("選項", "串聯選項 " + group.title(), () -> groupOptions(draft, group)));
             }
             container.addView(header);
         } else if (group.collapsed()) {
-            container.addView(textControl("▸ 展開串聯", "展開串聯 " + group.title(), toggleFold));
+            container.addView(activity.toolbarControl("▸ 展開串聯", "展開串聯 " + group.title(), toggleFold));
         }
         if (group.collapsed()) return container;
 
@@ -582,7 +561,7 @@ final class DraftWorkspace {
         Draft.Block.Kind kind = block.kind();
         Button fold = null;
         if (!reading) {
-            String type = block.image() ? "圖片" : kind == Draft.Block.Kind.TEXT && !block.url().isEmpty() ? "網址" : kind.label;
+            String type = block.image() ? "圖片" : kind.label;
             LinearLayout header = activity.row();
             Button handle = dragTitle(type, "排序卡片，" + type + "，可拖曳或點按排序", order);
             handle.setEnabled(editing);
@@ -593,7 +572,7 @@ final class DraftWorkspace {
                     fold = foldButton(block.expanded(), "內文", toggleFold);
                     header.addView(fold);
                 }
-                header.addView(textControl("選項", "卡片選項", () -> cardOptions(draft, index)));
+                header.addView(activity.toolbarControl("選項", "卡片選項", () -> cardOptions(draft, index)));
             } else {
                 header.addView(activity.text(selected ? "✓ 已選取" : "未選取", 13, accent, true));
             }
@@ -640,7 +619,7 @@ final class DraftWorkspace {
     }
 
     private Button dragTitle(String title, String description, Runnable action) {
-        Button control = textControl(title, description, action);
+        Button control = activity.toolbarControl(title, description, action);
         control.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         control.setTextSize(15);
         control.setMaxLines(2);
@@ -656,7 +635,7 @@ final class DraftWorkspace {
     }
 
     private Button foldButton(boolean expanded, String target, Runnable action) {
-        Button control = textControl(expanded ? "▾" : "▸",
+        Button control = activity.toolbarControl(expanded ? "▾" : "▸",
                 (expanded ? "摺疊" : "展開") + target, action);
         control.setTextSize(20);
         return control;
@@ -698,8 +677,8 @@ final class DraftWorkspace {
                     }
                     LinearLayout body = activity.dialogBody();
                     Draft.Block block = draft.blocks().get(index);
-                    body.addView(sourceExcerpt("目前拼報", block.content(), block.url(), block.format()));
-                    body.addView(sourceExcerpt("來源剪輯", source.content(), source.url(), source.format()),
+                    body.addView(sourceExcerpt("目前拼報", block.content(), block.format()));
+                    body.addView(sourceExcerpt("來源剪輯", source.content(), source.format()),
                             activity.margins(-1, -2, 8, 0));
                     ScrollView scroll = new ScrollView(activity);
                     scroll.addView(body);
@@ -711,11 +690,10 @@ final class DraftWorkspace {
                 }));
     }
 
-    private View sourceExcerpt(String label, String value, String url, TextFormat format) {
+    private View sourceExcerpt(String label, String value, TextFormat format) {
         LinearLayout card = panel();
         card.addView(activity.text(label, 13, accent, true));
         if (!value.isEmpty()) card.addView(activity.text(value, 16, ink, false), activity.margins(-1, -2, 6, 0));
-        if (!url.isEmpty()) card.addView(activity.text(url, 15, ink, false), activity.margins(-1, -2, 4, 0));
         card.addView(activity.text(format.markdown(value) ? "Markdown" : "純文字", 12, muted, false));
         return card;
     }
@@ -1011,7 +989,7 @@ final class DraftWorkspace {
 
     private void copy(Draft draft) {
         Runnable copy = () -> activity.runForeground(() -> Article.exportMarkdown(draft),
-                markdown -> activity.copyArticle("剪存文章", markdown));
+                markdown -> activity.copyArticle("剪存文章", markdown, draft.sensitive()));
         if (draft.sensitive()) {
             activity.confirm("複製私密拼報", "全文會寫入系統剪貼簿，可貼到其他 App。", "複製", copy);
         } else {
@@ -1072,7 +1050,7 @@ final class DraftWorkspace {
 
     private static String clipLabel(Vault.Entry entry) {
         if (entry.sensitive()) return "私密 · " + entry.privateTitle();
-        return entry.displayContent();
+        return entry.content();
     }
 
     private void editText(String title, String hint, String value, int limit, boolean multiline,

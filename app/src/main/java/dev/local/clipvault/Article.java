@@ -97,16 +97,12 @@ final class Article {
             case QUOTE, BULLETS, NUMBERED -> formatLines(content, kind, markdown);
             case CHECKLIST -> Checklist.render(Checklist.items(content), markdown);
             case CODE -> markdown ? fencedCode(content) : content;
-            case TEXT -> markdown ? clipMarkdown(content, block.url(), block.format()) : block.displayContent();
+            case TEXT -> markdown ? textMarkdown(content, block.format()) : content;
         };
     }
 
-    static String clipMarkdown(String content, String url, TextFormat format) {
-        if (content.trim().isEmpty() || content.trim().equals(url)) {
-            return url.isEmpty() ? "" : "<" + url + ">";
-        }
-        String body = format.markdown(content) ? content : literalMarkdown(content);
-        return url.isEmpty() ? body : body + "\n\n<" + url + ">";
+    static String textMarkdown(String content, TextFormat format) {
+        return format.markdown(content) ? content : literalMarkdown(content);
     }
 
     private static String literalMarkdown(String content) {

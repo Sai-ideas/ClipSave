@@ -53,7 +53,7 @@ final class ContentEditor {
         startReading = initiallyReading;
         input.setTypeface(Typeface.MONOSPACE);
         tabs = activity.row();
-        readTab = tool("檢視", () -> selectReading(true));
+        readTab = tool("預覽", () -> selectReading(true));
         editTab = tool("編輯", () -> selectReading(false));
         tabs.addView(readTab, new LinearLayout.LayoutParams(0, -2, 1));
         tabs.addView(editTab, new LinearLayout.LayoutParams(0, -2, 1));
@@ -62,13 +62,6 @@ final class ContentEditor {
         markup = tool("插入語法", () -> {});
         markup.setOnClickListener(view -> showMarkupMenu(markup));
         body.addView(markup, 1);
-    }
-
-    void allowMarkup(boolean enabled) {
-        if (markup != null) {
-            markup.setEnabled(enabled);
-            markup.setAlpha(enabled ? 1f : 0.45f);
-        }
     }
 
     private Button tool(String label, Runnable action) {
@@ -203,8 +196,8 @@ final class ContentEditor {
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
             if (!activity.canAct()) return;
             String value = input.getText().toString();
-            if (value.trim().isEmpty()) {
-                        input.setError("請輸入文字");
+            if (value.trim().isEmpty() && !hasAlternativeContent.getAsBoolean()) {
+                input.setError("請輸入文字");
                 return;
             }
             save.accept(value);

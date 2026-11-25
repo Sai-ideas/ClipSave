@@ -55,7 +55,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
-import java.util.Set;
 import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -67,7 +66,7 @@ public final class MainActivity extends Activity {
     private static final int UNLOCK = 11;
     private static final int ENABLE_LOCK = 12;
     private static final String SENSITIVE = "android.content.extra.IS_SENSITIVE";
-    private static final String[] FILTERS = {"全部", "收藏", "待讀", "文字", "連結", "圖片", "PDF"};
+    private static final String[] FILTERS = {"全部", "文字", "連結", "圖片"};
     private static final int[] RETENTION = {7, 30, 90, 0};
     private static final String[] RETENTION_NAMES = {"7 天", "30 天", "90 天", "永久保留"};
     private static final ExecutorService WORK = Executors.newSingleThreadExecutor();
@@ -81,7 +80,6 @@ public final class MainActivity extends Activity {
     private TextView listTitle;
     private TextView listCount;
     private List<Vault.Entry> entries = Collections.emptyList();
-    private Set<String> reading = Collections.emptySet();
     private AlertDialog dialog;
     private AlertDialog overlay;
     private boolean locked;
@@ -170,7 +168,6 @@ public final class MainActivity extends Activity {
         if (preferences.getBoolean("lock", false) && !locked) {
             locked = true;
             entries = Collections.emptyList();
-            reading = Collections.emptySet();
             loaded = false;
             search = "";
             showLocked();
@@ -234,29 +231,22 @@ public final class MainActivity extends Activity {
 
     private void showHome() {
         workspace.deactivate();
-        LinearLayout page = newPage();
-
+        LinearLayout toolbar = toolbarContainer();
         LinearLayout header = row();
-        header.addView(iconBadge(R.drawable.ic_clip, 40));
-        TextView identity = text("剪存", 26, ink, true);
-        identity.setAccessibilityHeading(true);
-        LinearLayout.LayoutParams identityLayout = new LinearLayout.LayoutParams(0, -2, 1);
-        identityLayout.setMarginStart(dp(12));
-        header.addView(identity, identityLayout);
-        LinearLayout.LayoutParams settingsLayout = new LinearLayout.LayoutParams(-2, -2);
-        settingsLayout.setMarginStart(dp(6));
-        header.addView(button("設定", surfaceSoft, accent, this::settings), settingsLayout);
-        page.addView(header, margins(-1, -2, 0, 18));
+        TextView title = text("剪輯", 20, ink, true);
+        title.setAccessibilityHeading(true);
+        LinearLayout.LayoutParams heading = new LinearLayout.LayoutParams(0, -2, 1);
+        heading.setMarginStart(dp(8));
+        header.addView(title, heading);
+        header.addView(toolbarControl("設定", "剪存設定", this::settings));
+        toolbar.addView(header);
 
-        page.addView(button("儲存目前剪貼簿", accent, onAccent, this::captureClipboard),
-                new LinearLayout.LayoutParams(-1, -2));
         LinearLayout actions = row();
-        actions.addView(button("新增文字", surfaceSoft, accent, this::addText),
-                new LinearLayout.LayoutParams(0, -2, 1));
-        LinearLayout.LayoutParams right = new LinearLayout.LayoutParams(0, -2, 1);
-        right.setMarginStart(dp(8));
-        actions.addView(button("匯入圖片", surfaceSoft, accent, this::pickFile), right);
-        page.addView(actions, margins(-1, -2, 8, 0));
+        addToolbarAction(actions, "收錄", "儲存目前剪貼簿", 1, this::captureClipboard);
+        addToolbarAction(actions, "新增", "新增文字", 1, this::addText);
+        addToolbarAction(actions, "匯入", "匯入圖片", 1, this::pickFile);
+        toolbar.addView(actions);
+        LinearLayout page = newPage(toolbar, false);
 
         EditText input = new EditText(this);
         input.setSingleLine(true);
@@ -277,7 +267,7 @@ public final class MainActivity extends Activity {
             }
             @Override public void afterTextChanged(Editable text) {}
         });
-        page.addView(input, margins(-1, dp(50), 16, 7));
+        page.addView(input, margins(-1, dp(50), 0, 7));
 
         HorizontalScrollView strip = new HorizontalScrollView(this);
         strip.setHorizontalScrollBarEnabled(false);
@@ -325,10 +315,6 @@ public final class MainActivity extends Activity {
         root.addView(gate, new LinearLayout.LayoutParams(-1, -1));
     }
 
-    LinearLayout newPage() {
-        return newPage(null, false);
-    }
-
     LinearLayout newPage(View toolbar, boolean pinbao) {
         startScreen();
         if (toolbar != null) root.addView(toolbar, new LinearLayout.LayoutParams(-1, -2));
@@ -340,6 +326,31 @@ public final class MainActivity extends Activity {
         scroll.addView(page, new ScrollView.LayoutParams(-1, -2));
         root.addView(destinationBar(pinbao), new LinearLayout.LayoutParams(-1, -2));
         return page;
+    }
+
+    LinearLayout toolbarContainer() {
+        LinearLayout bar = column();
+        bar.setBackgroundColor(surface);
+        bar.setPadding(dp(8), dp(4), dp(8), dp(4));
+        return bar;
+    }
+
+    Button toolbarControl(String label, String description, Runnable action) {
+        Button button = button(label, Color.TRANSPARENT, ink, () -> {
+            if (canAct()) action.run();
+        });
+        button.setTextSize(13);
+        button.setPadding(dp(3), dp(4), dp(3), dp(4));
+        button.setMinWidth(dp(48));
+        button.setMinimumWidth(dp(48));
+        button.setContentDescription(description);
+        return button;
+    }
+
+    Button addToolbarAction(LinearLayout row, String label, String description, float weight, Runnable action) {
+        Button control = toolbarControl(label, description, action);
+        row.addView(control, new LinearLayout.LayoutParams(0, -2, weight));
+        return control;
     }
 
     private LinearLayout destinationBar(boolean pinbao) {
@@ -398,7 +409,7 @@ public final class MainActivity extends Activity {
             chip.setBackground(buttonBackground(i == filter ? accent : surfaceSoft, 18));
             chip.setSelected(i == filter);
         }
-        listTitle.setText(filter == 0 ? "剪輯" : FILTERS[filter]);
+        listTitle.setText(FILTERS[filter]);
         results.removeAllViews();
         if (!loaded) {
             listCount.setText("");
@@ -414,11 +425,9 @@ public final class MainActivity extends Activity {
         String query = search.trim().toLowerCase(Locale.ROOT);
         int count = 0;
         for (Vault.Entry entry : entries) {
-            if (filter == 1 && !entry.starred()) continue;
-            if (filter == 2 && !reading.contains(entry.id())) continue;
-            if (filter > 2 && !FILTERS[filter].equals(entry.type())) continue;
+            if (!matchesFilter(entry)) continue;
             if (!query.isEmpty() && (entry.sensitive()
-                    || (!entry.displayContent().toLowerCase(Locale.ROOT).contains(query)
+                    || (!entry.content().toLowerCase(Locale.ROOT).contains(query)
                     && !entry.url().toLowerCase(Locale.ROOT).contains(query)
                     && !entry.tag().toLowerCase(Locale.ROOT).contains(query)))) continue;
             count++;
@@ -434,6 +443,14 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private boolean matchesFilter(Vault.Entry entry) {
+        return switch (FILTERS[filter]) {
+            case "全部" -> true;
+            case "連結" -> !entry.url().isEmpty();
+            default -> FILTERS[filter].equals(entry.type());
+        };
+    }
+
     private LinearLayout card(Vault.Entry entry) {
         LinearLayout card = column();
         card.setBackground(panel(18));
@@ -441,16 +458,13 @@ public final class MainActivity extends Activity {
         String type = entry.type();
         LinearLayout heading = row();
         heading.addView(iconBadge(entry.sensitive() ? R.drawable.ic_lock : switch (type) {
-            case "連結" -> R.drawable.ic_link;
             case "圖片" -> R.drawable.ic_image;
             default -> R.drawable.ic_document;
         }, 34));
 
         LinearLayout details = column();
-        String badge = type;
+        String badge = type.equals("PDF") ? "附件" : type;
         if (entry.pinned()) badge += "  ·  置頂";
-        if (entry.starred()) badge += "  ·  收藏";
-        if (reading.contains(entry.id())) badge += "  ·  待讀";
         if (!entry.sensitive() && !entry.tag().isEmpty()) badge += "  ·  " + entry.tag();
         details.addView(text(badge, 13, accent, true));
         details.addView(text(DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
@@ -460,7 +474,7 @@ public final class MainActivity extends Activity {
         heading.addView(details, detailsLayout);
         card.addView(heading);
 
-        TextView content = text(entry.sensitive() ? entry.privateTitle() : entry.displayContent(), 17, ink, true);
+        TextView content = text(entry.sensitive() ? entry.privateTitle() : entry.content(), 17, ink, true);
         if (entry.sensitive()) content.setContentDescription(entry.privateDescription().isEmpty()
                 ? "私密剪輯，內容已隱藏" : "私密剪輯，" + entry.privateDescription());
         content.setMinHeight(dp(48));
@@ -490,8 +504,7 @@ public final class MainActivity extends Activity {
             open.setAlpha(0.6f);
         }
         actions.addView(open);
-        actions.addView(organizationAction(entry, true));
-        actions.addView(organizationAction(entry, false));
+        actions.addView(pinAction(entry));
         actions.addView(actionButton("更多", R.drawable.ic_more, () -> entryOptions(entry)));
         if (getResources().getConfiguration().screenWidthDp >= 360) {
             card.addView(actions, margins(-1, -2, 4, 0));
@@ -504,32 +517,30 @@ public final class MainActivity extends Activity {
         return card;
     }
 
-    private Button organizationAction(Vault.Entry entry, boolean pin) {
-        boolean selected = pin ? entry.pinned() : entry.starred();
-        String label = pin ? "置頂" : "收藏";
-        Button action = actionButton(label, pin ? R.drawable.ic_pin : R.drawable.ic_star,
+    private Button pinAction(Vault.Entry entry) {
+        boolean pinned = entry.pinned();
+        Button action = actionButton("置頂", R.drawable.ic_pin,
                 () -> authorize(entry, "整理私密剪輯", current -> {
-                    boolean next = !(pin ? current.pinned() : current.starred());
+                    boolean next = !current.pinned();
                     mutate(() -> {
-                        vault.setOrganizationFlag(current.id(), pin, next);
+                        vault.setPinned(current.id(), next);
                         return null;
-                    }, next ? "已" + label : "已取消" + label);
+                    }, next ? "已置頂" : "已取消置頂");
                 }));
-        action.setBackground(buttonBackground(selected ? surfaceSoft : surface, 13));
-        action.setSelected(selected);
-        action.setContentDescription(selected ? "取消" + label : label);
-        if (Build.VERSION.SDK_INT >= 30) action.setStateDescription(selected ? "已" + label : "未" + label);
+        action.setBackground(buttonBackground(pinned ? surfaceSoft : surface, 13));
+        action.setSelected(pinned);
+        action.setContentDescription(pinned ? "取消置頂" : "置頂");
+        if (Build.VERSION.SDK_INT >= 30) action.setStateDescription(pinned ? "已置頂" : "未置頂");
         return action;
     }
 
     private void refresh() {
         if (busy || locked) return;
-        run(() -> new Snapshot(vault.list(), vault.retentionDays(), vault.reading()), snapshot -> {
+        run(() -> new Snapshot(vault.list(), vault.retentionDays()), snapshot -> {
             loadFailed = false;
             loaded = true;
             entries = snapshot.entries();
             retentionDays = snapshot.days();
-            reading = snapshot.reading();
             render();
             resumePrivateAction();
             consumeImport();
@@ -540,7 +551,7 @@ public final class MainActivity extends Activity {
         });
     }
 
-    private record Snapshot(List<Vault.Entry> entries, int days, Set<String> reading) {}
+    private record Snapshot(List<Vault.Entry> entries, int days) {}
     private record Capture(String text, Uri uri, String mime, boolean sensitive, boolean fromSelection) {
         Capture(String text, Uri uri, String mime, boolean sensitive) {
             this(text, uri, mime, sensitive, false);
@@ -591,66 +602,43 @@ public final class MainActivity extends Activity {
     private void showTextEditor(Vault.Entry entry) {
         if (busy) return;
         String original = entry == null ? "" : entry.content();
-        String originalUrl = entry == null ? "" : entry.url();
-        boolean originalMarkdown = entry == null || entry.format().markdown(original);
-        ContentEditor editor = new ContentEditor(this, "輸入內文", original, Vault.MAX_TEXT, true);
-        EditText url = edit("主要網址（選填）", Vault.MAX_LINK, false);
-        url.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI
-                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        url.setText(originalUrl);
-        CheckBox markdown = checkbox("Markdown 格式", originalMarkdown);
-        LinearLayout fields = column();
-        fields.addView(url);
-        fields.addView(markdown);
-        editor.body.addView(fields);
+        String primary = entry == null ? "" : entry.url();
+        TextFormat originalFormat = entry == null ? TextFormat.MARKDOWN : entry.format();
+        ContentEditor editor = new ContentEditor(this, "輸入 Markdown 內文", original, Vault.MAX_TEXT, true);
         CheckBox mask = checkbox("標為私密", false);
         EditText description;
         if (entry == null) {
+            LinearLayout fields = column();
             fields.addView(mask);
             description = addPrivateDescription(fields, "", mask);
+            editor.body.addView(fields);
         } else {
             description = null;
         }
         editor.enableReading(() -> {
-            String source = editor.input.getText().toString();
-            String link = url.getText().toString().trim();
-            return Article.clipMarkdown(source, Vault.isWebLink(link) ? link : "", selectedFormat(markdown));
+            String value = editor.input.getText().toString();
+            String source = value.trim().isEmpty() ? primary : value;
+            return Article.textMarkdown(source, original.equals(source) ? originalFormat : TextFormat.MARKDOWN);
         }, entry != null);
-        editor.allowMarkup(originalMarkdown);
-        markdown.setOnCheckedChangeListener((button, checked) -> editor.allowMarkup(checked));
         editor.show(entry == null ? "新增文字" : "剪輯內容", true,
                 () -> entry != null && entry.sensitive(),
-                () -> mask.isChecked() || (description != null && description.length() > 0)
-                        || !originalUrl.contentEquals(url.getText()) || markdown.isChecked() != originalMarkdown,
-                () -> !url.getText().toString().trim().isEmpty(), value -> {
-                    String primary = url.getText().toString().trim();
-                    String content = value.trim().isEmpty() ? "" : value;
-                    if (entry == null && primary.isEmpty() && Vault.isWebLink(content)) {
-                        primary = content.trim();
-                        content = "";
-                    }
-                    if (!primary.isEmpty() && !Vault.isWebLink(primary)) {
-                        url.setError("請輸入有效的 HTTP 或 HTTPS 網址");
-                        url.requestFocus();
-                        return;
-                    }
-                    saveEditedClip(entry, content, primary, selectedFormat(markdown), mask.isChecked(),
-                            description == null ? "" : description.getText().toString());
+                () -> mask.isChecked() || (description != null && description.length() > 0),
+                () -> !primary.isEmpty(), value -> {
+                    String content = value.trim().isEmpty() ? primary : value;
+                    TextFormat format = original.equals(content) ? originalFormat : TextFormat.MARKDOWN;
+                    String display = description == null ? "" : description.getText().toString();
+                    boolean sensitive = mask.isChecked();
+                    saveEditor(() -> {
+                        if (entry == null) vault.addText(content, format, sensitive, display);
+                        else vault.updateText(entry.id(), content, format);
+                        return null;
+                    }, entry == null ? "已儲存" : "已更新內容");
                 });
     }
 
-    private static TextFormat selectedFormat(CheckBox markdown) {
-        return markdown.isChecked() ? TextFormat.MARKDOWN : TextFormat.PLAIN;
-    }
-
-    private void saveEditedClip(Vault.Entry entry, String content, String url, TextFormat format,
-                                boolean sensitive, String description) {
+    private void saveEditor(Callable<Void> change, String message) {
         AlertDialog prompt = dialog;
-        mutate(() -> {
-            if (entry == null) vault.addText(content, url, format, sensitive, description);
-            else vault.updateText(entry.id(), content, url, format);
-            return null;
-        }, entry == null ? "已儲存" : "已更新內容", () -> {
+        mutate(change, message, () -> {
             if (dialog == prompt) dismissDialog();
         });
     }
@@ -798,11 +786,8 @@ public final class MainActivity extends Activity {
             ClipData clip = entry.attachment()
                     ? new ClipData("剪存附件", new String[]{entry.mime()},
                             new ClipData.Item(AttachmentProvider.uri(this, entry.id())))
-                    : ClipData.newPlainText("剪存", entry.displayContent());
-            PersistableBundle options = new PersistableBundle();
-            options.putBoolean(SENSITIVE, true);
-            clip.getDescription().setExtras(options);
-            clipboard.setPrimaryClip(clip);
+                    : ClipData.newPlainText("剪存", entry.content());
+            writeClipboard(clip, entry.sensitive());
             if (Build.VERSION.SDK_INT < 33) toast("已複製到系統剪貼簿。");
         } catch (RuntimeException error) {
             toast("無法複製這筆剪輯。");
@@ -878,35 +863,42 @@ public final class MainActivity extends Activity {
 
     private void entryOptions(Vault.Entry entry) {
         if (busy) return;
-        String organize = entry.sensitive() ? "整理剪輯（含顯示描述）" : "置頂、收藏與標籤";
+        String organize = entry.sensitive() ? "整理剪輯（含顯示描述）" : "置頂與標籤";
         ArrayList<String> options = new ArrayList<>(Arrays.asList(organize, "分享", "刪除"));
-        String type = entry.type();
-        if (!type.equals("PDF")) options.add("加入拼報");
-        boolean waiting = reading.contains(entry.id());
-        if (type.equals("連結")) {
-            options.add(waiting ? "標為已讀" : "加入待讀");
+        if (entry.canEditUrl()) {
+            options.add("加入拼報");
+            options.add("編輯網址");
         }
-        int privacyOption = options.size();
         if (!entry.sensitive()) options.add("設為私密");
         show(new AlertDialog.Builder(this).setTitle("剪輯選項")
                 .setItems(options.toArray(new String[0]), (d, which) -> {
-                    if (which == privacyOption) {
-                        protectEntry(entry);
-                        return;
-                    }
-                    switch (which) {
-                        case 0 -> authorize(entry, "編輯私密剪輯設定", this::editOptions);
-                        case 1 -> share(entry);
-                        case 2 -> confirm("刪除剪輯", "這筆剪輯將從歷史清單移除。", "刪除",
+                    switch (options.get(which)) {
+                        case "分享" -> share(entry);
+                        case "刪除" -> confirm("刪除剪輯", "這筆剪輯將從歷史清單移除。", "刪除",
                                 () -> mutate(() -> { vault.delete(entry.id()); return null; }, "已刪除"));
-                        case 3 -> workspace.pickDraft(entry);
-                        case 4 -> mutate(() -> {
-                            vault.setReading(entry.id(), !waiting);
-                            return null;
-                        }, waiting ? "已標為已讀，套用一般保留期限。" : "已加入待讀");
-                        default -> {}
+                        case "加入拼報" -> workspace.pickDraft(entry);
+                        case "編輯網址" -> authorize(entry, "編輯私密網址", this::editUrl);
+                        case "設為私密" -> protectEntry(entry);
+                        default -> authorize(entry, "編輯私密剪輯設定", this::editOptions);
                     }
                 }));
+    }
+
+    private void editUrl(Vault.Entry entry) {
+        ContentEditor editor = new ContentEditor(this, "主要網址（留空可清除）", entry.url(), Vault.MAX_LINK, false);
+        editor.input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        editor.show("編輯網址", false, entry::sensitive, () -> false, () -> true, value -> {
+            String url = value.trim();
+            if (!url.isEmpty() && !Vault.isWebLink(url)) {
+                editor.input.setError("請輸入有效的 HTTP 或 HTTPS 網址");
+                return;
+            }
+            saveEditor(() -> {
+                vault.updateUrl(entry.id(), url);
+                return null;
+            }, url.isEmpty() ? "已清除網址" : "已更新網址");
+        });
     }
 
     private void protectEntry(Vault.Entry entry) {
@@ -940,21 +932,18 @@ public final class MainActivity extends Activity {
     private void editOptions(Vault.Entry entry) {
         LinearLayout body = dialogBody();
         CheckBox pin = checkbox("置頂並保留到手動刪除", entry.pinned());
-        CheckBox star = checkbox("加入收藏", entry.starred());
         EditText tag = edit("自訂標籤", 40, false);
         tag.setText(entry.tag());
         body.addView(pin);
-        body.addView(star);
         body.addView(tag);
         EditText description = entry.sensitive() ? addPrivateDescription(body, entry.privateDescription(), null) : null;
         show(new AlertDialog.Builder(this).setTitle("整理剪輯").setView(dialogScroll(body))
                 .setNegativeButton("取消", null).setPositiveButton("儲存", (d, which) -> {
                     boolean pinned = pin.isChecked();
-                    boolean starred = star.isChecked();
                     String label = tag.getText().toString().trim();
                     String display = description == null ? null : description.getText().toString();
                     mutate(() -> {
-                        vault.updateOptions(entry.id(), pinned, starred, label, display);
+                        vault.updateOptions(entry.id(), pinned, label, display);
                         return null;
                     }, "已更新");
                 }));
@@ -993,7 +982,7 @@ public final class MainActivity extends Activity {
             send.setClipData(new ClipData("剪存附件", new String[]{entry.mime()}, new ClipData.Item(uri)));
             send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } else {
-            send.putExtra(Intent.EXTRA_TEXT, entry.displayContent());
+            send.putExtra(Intent.EXTRA_TEXT, entry.content());
         }
         try {
             startActivity(Intent.createChooser(send, "分享剪輯"));
@@ -1016,7 +1005,7 @@ public final class MainActivity extends Activity {
                                 preferences.edit().putBoolean("lock", false).apply();
                                 toast("已關閉離開時上鎖。");
                             });
-                    if (which == 2) confirm("刪除所有剪輯", "歷史清單中的文字與附件會移除，包含置頂與收藏。拼報內的副本會保留。", "全部刪除",
+                    if (which == 2) confirm("刪除所有剪輯", "歷史清單中的文字與附件會移除，包含置頂項目。拼報內的副本會保留。", "全部刪除",
                             () -> mutate(() -> { vault.clear(); return null; }, "已清除剪存的資料"));
                 })
                 .setNegativeButton("關閉", null));
@@ -1167,11 +1156,10 @@ public final class MainActivity extends Activity {
     private void mutate(Callable<Void> action, String success, Runnable afterSave) {
         run(() -> {
             action.call();
-            return new Snapshot(vault.list(), vault.retentionDays(), vault.reading());
+            return new Snapshot(vault.list(), vault.retentionDays());
         }, snapshot -> {
             entries = snapshot.entries();
             retentionDays = snapshot.days();
-            reading = snapshot.reading();
             loaded = true;
             render();
             toast(success);
@@ -1185,17 +1173,23 @@ public final class MainActivity extends Activity {
         return resumed && !locked && !busy;
     }
 
-    void copyArticle(String title, String body) {
+    void copyArticle(String title, String body, boolean sensitive) {
         try {
             ClipData clip = ClipData.newPlainText(title, body);
-            PersistableBundle options = new PersistableBundle();
-            options.putBoolean(SENSITIVE, true);
-            clip.getDescription().setExtras(options);
-            clipboard.setPrimaryClip(clip);
+            writeClipboard(clip, sensitive);
             if (Build.VERSION.SDK_INT < 33) toast("已複製文章文字。");
         } catch (RuntimeException error) {
             toast("文章過長，請改用匯出。");
         }
+    }
+
+    private void writeClipboard(ClipData clip, boolean sensitive) {
+        if (sensitive) {
+            PersistableBundle options = new PersistableBundle();
+            options.putBoolean(SENSITIVE, true);
+            clip.getDescription().setExtras(options);
+        }
+        clipboard.setPrimaryClip(clip);
     }
 
     <T> void runForeground(Callable<T> operation, Consumer<T> done) {
