@@ -1,10 +1,14 @@
 package dev.local.clipvault;
 
+import android.content.res.ColorStateList;
+import android.graphics.Color;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.view.DragEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.widget.Button;
 import android.widget.ScrollView;
 
 import java.util.ArrayList;
@@ -17,6 +21,8 @@ final class DraftReorder {
     private final BooleanSupplier canStart;
     private final BiConsumer<Integer, Integer> move;
     private final ArrayList<View> cards = new ArrayList<>();
+    private final int[] scrollLocation = new int[2];
+    private final int[] scopeLocation = new int[2];
     private final GradientDrawable insertionLine = new GradientDrawable();
     private final int slop;
     private final int edge;
@@ -29,12 +35,12 @@ final class DraftReorder {
     private float pointerY;
     private final Runnable autoScroll = this::scrollTowardPointer;
 
-    private record Drag(DraftReorder owner, int origin) {}
+    private record Drag(DraftReorder owner, int origin, Runnable clearReady) {}
 
-    DraftReorder(View page, BooleanSupplier canStart, BiConsumer<Integer, Integer> move,
+    DraftReorder(ScrollView scroll, View page, BooleanSupplier canStart, BiConsumer<Integer, Integer> move,
                  int cardGap, int accent) {
         this.page = page;
-        scroll = (ScrollView) page.getParent();
+        this.scroll = scroll;
         this.canStart = canStart;
         this.move = move;
         float density = page.getResources().getDisplayMetrics().density;
@@ -45,45 +51,95 @@ final class DraftReorder {
         insertionLine.setColor(accent);
         insertionLine.setCornerRadius(lineHeight / 2f);
         slop = ViewConfiguration.get(scroll.getContext()).getScaledTouchSlop();
-        scroll.setOnDragListener((view, event) -> handleDrag(event));
     }
 
-    void addCard(View card, View handle) {
+    static void routeEvents(ScrollView scroll) {
+        scroll.setOnDragListener((view, event) -> event.getLocalState() instanceof Drag drag
+                && drag.owner().scroll == scroll && drag.owner().handleDrag(event, drag));
+    }
+
+    void addCard(View card, Button handle) {
         int index = cards.size();
         cards.add(card);
-        handle.setOnTouchListener(new View.OnTouchListener() {
-            private float startX;
-            private float startY;
-
-            @Override public boolean onTouch(View view, MotionEvent event) {
-                switch (event.getActionMasked()) {
-                    case MotionEvent.ACTION_DOWN -> {
-                        startX = event.getX();
-                        startY = event.getY();
-                        if (cards.size() > 1 && canStart.getAsBoolean()) {
-                            view.getParent().requestDisallowInterceptTouchEvent(true);
-                        }
-                    }
-                    case MotionEvent.ACTION_MOVE -> {
-                        if (cards.size() > 1 && canStart.getAsBoolean()
-                                && Math.abs(event.getY() - startY) > slop
-                                && Math.abs(event.getY() - startY) >= Math.abs(event.getX() - startX)) {
-                            view.setPressed(false);
-                            return view.startDragAndDrop(null, new View.DragShadowBuilder(handle),
-                                    new Drag(DraftReorder.this, index), 0);
-                        }
-                    }
-                    case MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                            view.getParent().requestDisallowInterceptTouchEvent(false);
-                    default -> {}
-                }
-                return false;
-            }
-        });
+        DragGesture gesture = new DragGesture(handle, index);
+        handle.setOnTouchListener(gesture);
+        handle.setOnLongClickListener(view -> gesture.arm());
     }
 
-    private boolean handleDrag(DragEvent event) {
-        if (!(event.getLocalState() instanceof Drag drag) || drag.owner() != this) return false;
+    private final class DragGesture implements View.OnTouchListener {
+        private final Button handle;
+        private final int index;
+        private final Drawable background;
+        private final ColorStateList textColors;
+        private float startX;
+        private float startY;
+        private boolean touching;
+        private boolean ready;
+        private boolean dragging;
+
+        DragGesture(Button handle, int index) {
+            this.handle = handle;
+            this.index = index;
+            background = handle.getBackground();
+            textColors = handle.getTextColors();
+        }
+
+        boolean arm() {
+            if (!touching || cards.size() < 2 || !canStart.getAsBoolean()) return false;
+            ready = true;
+            GradientDrawable highlight = new GradientDrawable();
+            highlight.setColor(handle.getContext().getColor(R.color.pinbao_drag_ready));
+            highlight.setCornerRadius(handle.getResources().getDisplayMetrics().density * 8);
+            handle.setBackground(highlight);
+            handle.setTextColor(Color.WHITE);
+            handle.getParent().requestDisallowInterceptTouchEvent(true);
+            return true;
+        }
+
+        private void clearReady() {
+            if (ready) {
+                handle.setBackground(background);
+                handle.setTextColor(textColors);
+                handle.setPressed(false);
+                if (handle.getParent() != null) handle.getParent().requestDisallowInterceptTouchEvent(false);
+            }
+            ready = false;
+            touching = false;
+            dragging = false;
+        }
+
+        @Override public boolean onTouch(View view, MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN -> {
+                    clearReady();
+                    startX = event.getX();
+                    startY = event.getY();
+                    touching = true;
+                }
+                case MotionEvent.ACTION_MOVE -> {
+                    float dx = Math.abs(event.getX() - startX);
+                    float dy = Math.abs(event.getY() - startY);
+                    if (!ready && Math.max(dx, dy) > slop) touching = false;
+                    if (ready && !dragging && canStart.getAsBoolean() && dy > slop && dy >= dx) {
+                        view.setPressed(false);
+                        dragging = true;
+                        if (view.startDragAndDrop(null, new View.DragShadowBuilder(view),
+                                new Drag(DraftReorder.this, index, this::clearReady), 0)) return true;
+                        clearReady();
+                    }
+                }
+                case MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_DOWN -> {
+                    boolean consume = ready;
+                    if (!dragging) clearReady();
+                    return consume;
+                }
+                default -> {}
+            }
+            return false;
+        }
+    }
+
+    private boolean handleDrag(DragEvent event, Drag drag) {
         switch (event.getAction()) {
             case DragEvent.ACTION_DRAG_STARTED -> {
                 origin = drag.origin();
@@ -114,6 +170,7 @@ final class DraftReorder {
                 showInsertionLine(-1);
                 if (origin >= 0) cards.get(origin).setAlpha(1f);
                 origin = -1;
+                drag.clearReady().run();
             }
             default -> {}
         }
@@ -121,8 +178,10 @@ final class DraftReorder {
     }
 
     private int slotAt(float x, float y) {
-        float pageX = x + scroll.getScrollX() - page.getLeft();
-        float pageY = y + scroll.getScrollY() - page.getTop();
+        scroll.getLocationInWindow(scrollLocation);
+        page.getLocationInWindow(scopeLocation);
+        float pageX = x + scrollLocation[0] - scopeLocation[0];
+        float pageY = y + scrollLocation[1] - scopeLocation[1];
         View first = cards.get(0);
         View last = cards.get(cards.size() - 1);
         if (pageX < first.getLeft() || pageX >= first.getRight()
