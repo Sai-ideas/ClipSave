@@ -524,6 +524,9 @@ public final class PinbaoRegression extends Instrumentation {
                 MarkdownPreview preview = (MarkdownPreview) find(dialogRoot(screen), v -> v instanceof MarkdownPreview);
                 return preview != null && preview.getHeight() > 100;
             }), "Markdown occupies reader body");
+            MarkdownPreview clip = onMain(() ->
+                    (MarkdownPreview) find(dialogRoot(screen), v -> v instanceof MarkdownPreview));
+            inspectClipPreview(clip, "粗體");
             onMain(() -> button(dialogRoot(screen), "編輯").performClick());
             await(() -> onMain(() -> editInput(screen) != null && editInput(screen).getHeight() > 150),
                     "reader to full-height editor");
@@ -616,19 +619,34 @@ public final class PinbaoRegression extends Instrumentation {
     }
 
     @android.annotation.SuppressLint("SetJavaScriptEnabled")
+    private void inspectClipPreview(MarkdownPreview web, String expected) {
+        try {
+            runOnMainSync(() -> web.getSettings().setJavaScriptEnabled(true));
+            await(() -> previewHas(web,
+                    "(document.querySelector('blockquote strong') || {}).textContent === '" + expected + "'"),
+                    "clip preview renders formatted text");
+        } finally {
+            runOnMainSync(() -> web.getSettings().setJavaScriptEnabled(false));
+        }
+    }
+
+    private boolean previewHas(MarkdownPreview web, String condition) {
+        AtomicReference<String> result = new AtomicReference<>();
+        runOnMainSync(() -> web.evaluateJavascript("Boolean(" + condition + ")", result::set));
+        long deadline = SystemClock.uptimeMillis() + 1000;
+        while (result.get() == null && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(25);
+        return "true".equals(result.get());
+    }
+
+    @android.annotation.SuppressLint("SetJavaScriptEnabled")
     private void inspectPreview(MarkdownPreview web, String expectedUrl) throws Exception {
         try {
             runOnMainSync(() -> web.getSettings().setJavaScriptEnabled(true));
-            await(() -> {
-                AtomicReference<String> result = new AtomicReference<>();
-                runOnMainSync(() -> web.evaluateJavascript(
-                        "Boolean((document.querySelector('img') || {}).naturalWidth > 0 && document.querySelector('blockquote')"
-                                + " && Array.from(document.links).some(a => a.href === '" + expectedUrl + "'))",
-                        result::set));
-                long deadline = SystemClock.uptimeMillis() + 1000;
-                while (result.get() == null && SystemClock.uptimeMillis() < deadline) SystemClock.sleep(25);
-                return "true".equals(result.get());
-            }, "preview shows local picture, formatted quote, and updated clickable link");
+            await(() -> previewHas(web,
+                    "Array.from(document.images).some(i => i.naturalWidth > 0 && i.src.startsWith('data:image/webp;'))"
+                            + " && document.querySelector('blockquote')"
+                            + " && Array.from(document.links).some(a => a.href === '" + expectedUrl + "')"),
+                    "preview shows local picture, formatted quote, and updated clickable link");
             AtomicReference<String> coordinates = new AtomicReference<>();
             runOnMainSync(() -> web.evaluateJavascript(
                     "(function(){var a=Array.from(document.links).find(a=>a.href==='" + expectedUrl

@@ -1000,7 +1000,9 @@ final class DraftWorkspace {
         for (Map.Entry<String, Bitmap> image : bitmaps.entrySet()) {
             if (image.getValue() == null) continue;
             ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-            if (image.getValue().compress(Bitmap.CompressFormat.PNG, 100, encoded)) {
+            Bitmap.CompressFormat format = android.os.Build.VERSION.SDK_INT >= 30
+                    ? Bitmap.CompressFormat.WEBP_LOSSY : Bitmap.CompressFormat.WEBP;
+            if (image.getValue().compress(format, 82, encoded)) {
                 result.put(names.get(image.getKey()), encoded.toByteArray());
             }
         }
