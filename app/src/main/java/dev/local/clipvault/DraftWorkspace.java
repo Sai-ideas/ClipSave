@@ -58,9 +58,10 @@ final class DraftWorkspace {
     private final Set<String> selectedIds = new LinkedHashSet<>();
     private boolean reading;
     private Map<String, Bitmap> cardImages = Collections.emptyMap();
+    private Set<String> sourceDifferences = Collections.emptySet();
     private Position remembered;
     private record Position(String draftId, int scrollY, boolean reading) {}
-    private record Opened(Draft draft, Map<String, Bitmap> images) {}
+    private record Opened(Draft draft, Map<String, Bitmap> images, Set<String> sourceDifferences) {}
     private record Export(String id, long updatedAt, boolean sensitive, Uri location) {}
     private record DeleteTarget(Draft draft, List<Draft> shelf) {}
 
@@ -177,8 +178,8 @@ final class DraftWorkspace {
                 () -> activity.runForeground(() -> {
                     Draft stored = vault.draft(draft.id());
                     if (stored.sensitive() && !draft.sensitive()) throw new Vault.Limit("請重新開啟私密拼報。");
-                    return new Opened(stored, loadImages(stored, Collections.emptyMap(), true));
-                }, opened -> renderDraft(opened.draft(), position, opened.images())));
+                    return editorData(stored, loadImages(stored, Collections.emptyMap(), true));
+                }, opened -> renderDraft(opened, position)));
     }
 
     void pickDraft(Vault.Entry entry) {
@@ -302,22 +303,35 @@ final class DraftWorkspace {
                     ? cardImages : Collections.emptyMap();
             activity.runForeground(() -> {
                 Draft stored = vault.addDraftClips(draft.id(), ids, sensitive);
-                return new Opened(stored, loadImages(stored, cached, true));
-            }, opened -> renderDraft(opened.draft(), null, opened.images()));
+                return editorData(stored, loadImages(stored, cached, true));
+            }, this::renderDraft);
         });
     }
 
-    private void renderDraft(Draft draft) {
-        renderDraft(draft, null, null);
+    private Opened editorData(Draft draft, Map<String, Bitmap> images) throws Exception {
+        return new Opened(draft, images, vault.draftSourceDifferences(draft));
     }
 
-    private void renderDraft(Draft draft, Position position, Map<String, Bitmap> images) {
+    private void renderDraft(Opened opened) {
+        renderDraft(opened, null);
+    }
+
+    private void renderDraft(Opened opened, Position position) {
+        renderDraft(opened.draft(), position, opened.images(), opened.sourceDifferences());
+    }
+
+    private void renderDraft(Draft draft) {
+        renderDraft(draft, null, null, null);
+    }
+
+    private void renderDraft(Draft draft, Position position, Map<String, Bitmap> images, Set<String> differences) {
         boolean sameDraft = active && current != null && current.id().equals(draft.id()) && page != null;
         int offset = position != null ? position.scrollY()
                 : sameDraft ? ((ScrollView) page.getParent()).getScrollY() : 0;
         if (!sameDraft) resetEditorMode();
         if (position != null) reading = position.reading();
         if (images != null) cardImages = images;
+        if (differences != null) sourceDifferences = differences;
         if (!cardImages.isEmpty()) {
             HashMap<String, Bitmap> retained = new HashMap<>();
             for (Draft.Block block : draft.blocks()) {
@@ -447,6 +461,7 @@ final class DraftWorkspace {
     private void resetEditorMode() {
         reading = false;
         cardImages = Collections.emptyMap();
+        sourceDifferences = Collections.emptySet();
         selectedIds.clear();
     }
 
@@ -533,7 +548,7 @@ final class DraftWorkspace {
     }
 
     private void saveSelectionChange(Draft original, Draft changed) {
-        activity.runForeground(() -> vault.updateDraft(original, changed), stored -> {
+        activity.runForeground(() -> editorData(vault.updateDraft(original, changed), null), stored -> {
             selectedIds.clear();
             renderDraft(stored);
         });
@@ -583,6 +598,17 @@ final class DraftWorkspace {
                 header.addView(activity.text(selected ? "✓ 已選取" : "未選取", 13, accent, true));
             }
             item.addView(header);
+        }
+
+        if (sourceDifferences.contains(block.id())) {
+            TextView hint = activity.text("與來源不同", 12, accent, true);
+            Drawable icon = activity.getDrawable(R.drawable.ic_source_difference).mutate();
+            int size = activity.dp(16);
+            icon.setBounds(0, 0, size, size);
+            icon.setTint(accent);
+            hint.setCompoundDrawablesRelative(icon, null, null, null);
+            hint.setCompoundDrawablePadding(activity.dp(4));
+            item.addView(hint, activity.margins(-1, -2, 0, 5));
         }
 
         LinearLayout body = activity.column();
@@ -678,7 +704,7 @@ final class DraftWorkspace {
                     activity.show(new AlertDialog.Builder(activity).setTitle("從剪輯更新").setView(scroll)
                             .setNegativeButton("取消", null)
                             .setPositiveButton("更新卡片", (dialog, which) -> activity.runForeground(
-                                    () -> vault.refreshDraftSource(draft, index, source, secure),
+                                    () -> editorData(vault.refreshDraftSource(draft, index, source, secure), null),
                                     this::renderDraft)), secure);
                 }));
     }
@@ -824,7 +850,7 @@ final class DraftWorkspace {
     private void replaceBlock(Draft draft, int index, String content, Runnable failure) {
         ArrayList<Draft.Block> blocks = new ArrayList<>(draft.blocks());
         blocks.set(index, blocks.get(index).withContent(content));
-        activity.runForeground(() -> vault.updateDraft(draft, draft.withContent(draft.title(), blocks)),
+        activity.runForeground(() -> editorData(vault.updateDraft(draft, draft.withContent(draft.title(), blocks)), null),
                 this::renderDraft, failure);
     }
 
@@ -900,7 +926,7 @@ final class DraftWorkspace {
     }
 
     private void saveDraft(Draft original, Draft changed) {
-        activity.runForeground(() -> vault.updateDraft(original, changed), this::renderDraft);
+        activity.runForeground(() -> editorData(vault.updateDraft(original, changed), null), this::renderDraft);
     }
 
     private Map<String, Bitmap> loadImages(Draft draft, Map<String, Bitmap> cached, boolean allowMissing)

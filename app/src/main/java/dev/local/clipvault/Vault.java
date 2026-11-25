@@ -355,6 +355,24 @@ final class Vault {
 
     record SourceChange(String content, boolean requiresVerification) {}
 
+    synchronized Set<String> draftSourceDifferences(Draft original) throws Exception {
+        Draft current = draft(original.id());
+        if (!current.equals(original)) throw new Limit("拼報已有變更，請重新開啟。");
+        HashMap<String, Entry> sources = new HashMap<>();
+        for (Entry source : entries) {
+            if (!source.attachment() && !expired(source, retention)) sources.put(source.id(), source);
+        }
+        Set<String> differences = new HashSet<>();
+        for (Draft.Block block : current.blocks()) {
+            if (sourceDiffers(block, sources.get(block.sourceId()))) differences.add(block.id());
+        }
+        return differences;
+    }
+
+    private static boolean sourceDiffers(Draft.Block block, Entry source) {
+        return !block.image() && source != null && !source.attachment() && !source.content().equals(block.content());
+    }
+
     synchronized SourceChange draftSource(Draft original, int index, boolean authenticated) throws Exception {
         Draft current = draft(original.id());
         if (!current.equals(original)) throw new Limit("拼報已有變更，請重新開啟。");
@@ -366,7 +384,7 @@ final class Vault {
         } catch (Limit missing) {
             return null;
         }
-        if (source.attachment() || source.content().equals(block.content())) return null;
+        if (!sourceDiffers(block, source)) return null;
         boolean secure = current.sensitive() || source.sensitive();
         return new SourceChange(!secure || authenticated ? source.content() : null, secure);
     }

@@ -180,13 +180,20 @@ public final class PinbaoRegression extends Instrumentation {
         try {
             Draft current = vault.addDraftClips(draft.id(), List.of(entry.id()), false);
             check(vault.draftSource(current, 0, false) == null, "equal source has no update");
+            check(vault.draftSourceDifferences(current).isEmpty(), "equal source has no indicator");
             vault.updateText(entry.id(), marker + " updated");
             Vault.SourceChange change = vault.draftSource(current, 0, false);
             check(change.content().endsWith(" updated"), "source difference");
             Draft.Block original = current.blocks().get(0);
+            check(vault.draftSourceDifferences(current).equals(Set.of(original.id())), "changed source marks its card");
             current = vault.refreshDraftSource(current, 0, change, false);
             check(current.blocks().get(0).id().equals(original.id())
                     && current.blocks().get(0).content().equals(change.content()), "update keeps block identity");
+            check(vault.draftSourceDifferences(current).isEmpty(), "update clears indicator");
+            Draft locallyEdited = vault.updateDraft(current, current.withContent(current.title(),
+                    List.of(current.blocks().get(0).withContent(marker + " local"))));
+            check(vault.draftSourceDifferences(locallyEdited).equals(Set.of(original.id())), "local edit marks its card");
+            current = vault.refreshDraftSource(locallyEdited, 0, vault.draftSource(locallyEdited, 0, false), false);
             vault.updateText(entry.id(), marker + " again");
             try {
                 vault.refreshDraftSource(current, 0, change, false);
@@ -194,6 +201,7 @@ public final class PinbaoRegression extends Instrumentation {
             } catch (Vault.Limit expected) {}
             vault.protectEntry(entry.id(), "");
             current = vault.draft(draft.id());
+            check(vault.draftSourceDifferences(current).equals(Set.of(original.id())), "private status contains only card ID");
             check(vault.draftSource(current, 0, false).content() == null, "private preview gated");
             try {
                 vault.refreshDraftSource(current, 0, vault.draftSource(current, 0, false), false);
@@ -202,6 +210,7 @@ public final class PinbaoRegression extends Instrumentation {
             check(vault.draftSource(current, 0, true).content().endsWith(" again"), "authorized source preview");
             vault.delete(entry.id());
             check(vault.draftSource(current, 0, true) == null
+                    && vault.draftSourceDifferences(current).isEmpty()
                     && vault.draft(draft.id()).blocks().get(0).content().equals(change.content()), "missing source keeps copy");
         } finally {
             vault.deleteDraft(vault.draft(draft.id()));
@@ -234,8 +243,6 @@ public final class PinbaoRegression extends Instrumentation {
             await(() -> onMain(() -> activity.canAct() && named(root(activity), name) != null), "workspace shelf");
             onMain(() -> button((View) named(root(activity), name).getParent(), "開啟").performClick());
             await(() -> onMain(() -> activity.canAct() && named(root(activity), "排序項目 2") != null), "workspace editor");
-            View editorRoot = onMain(() -> (View) root(activity).findViewById(android.R.id.content));
-            ScrollView content = onMain(() -> (ScrollView) find(root(activity), v -> v instanceof ScrollView));
             onMain(() -> action(activity, "新增區塊").performClick());
             runOnMainSync(() -> {
                 AlertDialog shown = dialog(activity);
@@ -259,7 +266,31 @@ public final class PinbaoRegression extends Instrumentation {
                 button(dialogRoot, "插入 1 筆").performClick();
             });
             await(() -> onMain(() -> activity.canAct() && named(root(activity), source.content()) != null), "insert card");
-            vault.updateText(source.id(), source.content() + " 已更新");
+            check(onMain(() -> named(root(activity), "與來源不同") == null), "new copy is unmarked");
+            onMain(() -> action(activity, "剪輯").performClick());
+            await(() -> onMain(() -> activity.canAct() && named(root(activity), source.content()) != null
+                    && button(root(activity), "新增文字") != null), "clip list ready");
+            onMain(() -> button((View) named(root(activity), source.content()).getParent(), "編輯").performClick());
+            runOnMainSync(() -> {
+                AlertDialog shown = dialog(activity);
+                EditText input = (EditText) find(shown.getWindow().getDecorView(), v -> v instanceof EditText);
+                input.setText(source.content() + " 已更新");
+                shown.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            });
+            await(() -> onMain(() -> activity.canAct()
+                    && named(root(activity), source.content() + " 已更新") != null), "source edited in clip list");
+            onMain(() -> action(activity, "拼報").performClick());
+            await(() -> onMain(() -> activity.canAct() && named(root(activity), "與來源不同") != null),
+                    "switching back shows source difference");
+            check(onMain(() -> {
+                View changed = (View) body(activity, source.content()).getParent();
+                TextView hint = (TextView) named(changed, "與來源不同");
+                return hint != null && hint.getCompoundDrawablesRelative()[0] != null
+                        && named(card(activity, 0), "與來源不同") == null;
+            }), "only the changed card has text and icon");
+            onMain(() -> action(activity, "切換為精簡模式").performClick());
+            check(onMain(() -> named(root(activity), "與來源不同") != null), "compact mode keeps indicator");
+            onMain(() -> action(activity, "切換為詳細模式").performClick());
             onMain(() -> cardAction(activity, source.content(), "卡片選項").performClick());
             await(() -> onMain(() -> dialog(activity) != null), "source menu ready");
             runOnMainSync(() -> {
@@ -281,6 +312,9 @@ public final class PinbaoRegression extends Instrumentation {
             });
             await(() -> onMain(() -> activity.canAct()
                     && named(root(activity), source.content() + " 已更新") != null), "source update rendered");
+            check(onMain(() -> named(root(activity), "與來源不同") == null), "visual indicator clears after update");
+            View editorRoot = onMain(() -> (View) root(activity).findViewById(android.R.id.content));
+            ScrollView content = onMain(() -> (ScrollView) find(root(activity), v -> v instanceof ScrollView));
             Point export = onMain(() -> center(action(activity, "匯出 ZIP")));
             runOnMainSync(() -> content.scrollTo(0, 200));
             check(onMain(() -> content.getScrollY() > 0 && export.equals(center(action(activity, "匯出 ZIP")))),
