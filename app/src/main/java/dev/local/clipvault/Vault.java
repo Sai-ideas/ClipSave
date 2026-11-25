@@ -219,6 +219,12 @@ final class Vault {
         update(current.withOptions(pin, star, tag, display));
     }
 
+    synchronized void setOrganizationFlag(String id, boolean pin, boolean enabled) throws Exception {
+        Entry current = entry(id);
+        update(current.withOptions(pin ? enabled : current.pinned(), pin ? current.starred() : enabled,
+                current.tag(), current.privateDescription()));
+    }
+
     synchronized void protectEntry(String id, String description) throws Exception {
         Entry current = entry(id);
         if (!current.sensitive()) update(current.protect(normalizeDescription(description)));

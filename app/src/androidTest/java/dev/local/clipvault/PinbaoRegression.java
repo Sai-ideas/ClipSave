@@ -35,25 +35,31 @@ import java.util.function.Supplier;
 /** Run on an unlocked test device with 剪存's optional app lock disabled. */
 public final class PinbaoRegression extends Instrumentation {
     private record Point(float x, float y) {}
+    private boolean contentOnly;
 
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
+        contentOnly = arguments != null && "content".equals(arguments.getString("scope"));
         start();
     }
 
     @Override public void onStart() {
         Bundle report = new Bundle();
         try {
-            checklist();
             Vault vault = Vault.get(getTargetContext());
-            arrangement();
-            privacy(vault, UUID.randomUUID().toString());
-            sourceUpdates(vault, UUID.randomUUID().toString());
-            reorder(vault, UUID.randomUUID().toString());
-            workspace(vault, UUID.randomUUID().toString());
+            if (!contentOnly) {
+                checklist();
+                arrangement();
+                privacy(vault, UUID.randomUUID().toString());
+                sourceUpdates(vault, UUID.randomUUID().toString());
+                reorder(vault, UUID.randomUUID().toString());
+                workspace(vault, UUID.randomUUID().toString());
+            }
+            contentEditing(vault, UUID.randomUUID().toString());
             var config = getTargetContext().getResources().getConfiguration();
             int dpi = getTargetContext().getResources().getDisplayMetrics().densityDpi;
-            report.putString("stream", "PASS Pinbao source update, sheets, stable surface, and long-press drag at " + config.screenWidthDp
+            report.putString("stream", "PASS " + (contentOnly ? "" : "Pinbao, ")
+                    + "content editing, Markdown, and image preview at " + config.screenWidthDp
                     + "dp, font scale " + config.fontScale + ", density " + dpi + "dpi\n");
             finish(Activity.RESULT_OK, report);
         } catch (Throwable error) {
@@ -464,6 +470,122 @@ public final class PinbaoRegression extends Instrumentation {
             vault.deleteDraft(vault.draft(draft.id()));
             vault.delete(source.id());
         }
+    }
+
+    private void contentEditing(Vault vault, String marker) throws Exception {
+        String original = "# " + marker + "\n\n> **粗體**\n\n- [x] 完成\n\n<script>文字</script>";
+        String rendered = MarkdownPreview.renderMarkup(original);
+        check(rendered.contains("<h1>") && rendered.contains("<blockquote>")
+                && rendered.contains("<strong>粗體</strong>") && rendered.contains("type=\"checkbox\"")
+                && rendered.contains("&lt;script&gt;"), "CommonMark, task list, and escaped HTML");
+
+        Vault.Entry entry = vault.addText(original, false, "");
+        android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(900, 1200,
+                android.graphics.Bitmap.Config.ARGB_8888);
+        bitmap.eraseColor(Color.BLUE);
+        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bytes);
+        bitmap.recycle();
+        Vault.Entry image = vault.addAttachment("image/png", marker + ".png", bytes.toByteArray(), false, "");
+        MainActivity activity = null;
+        try {
+            activity = (MainActivity) startActivitySync(new Intent(getTargetContext(), MainActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            MainActivity screen = activity;
+            await(() -> onMain(() -> screen.canAct() && named(root(screen), original) != null), "clip actions");
+            onMain(() -> clipAction(screen, original, "置頂").performClick());
+            await(() -> onMain(() -> screen.canAct() && clipAction(screen, original, "置頂").isSelected()),
+                    "pin highlights");
+            onMain(() -> clipAction(screen, original, "收藏").performClick());
+            await(() -> onMain(() -> screen.canAct() && clipAction(screen, original, "收藏").isSelected()),
+                    "favorite highlights");
+            check(vault.entry(entry.id()).pinned() && vault.entry(entry.id()).starred(), "both flags persisted");
+
+            onMain(() -> clipAction(screen, original, "查看").performClick());
+            await(() -> onMain(() -> dialogRoot(screen).getHeight() >= root(screen).getHeight() * 0.85),
+                    "fullscreen text reader");
+            onMain(() -> button(dialogRoot(screen), "Markdown 預覽").performClick());
+            await(() -> onMain(() -> {
+                MarkdownPreview preview = (MarkdownPreview) find(dialogRoot(screen), v -> v instanceof MarkdownPreview);
+                return preview != null && preview.getHeight() > 100;
+            }), "Markdown occupies reader body");
+            onMain(() -> dialog(screen).getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
+            await(() -> onMain(() -> editInput(screen) != null && editInput(screen).getHeight() > 150),
+                    "reader to full-height editor");
+            runOnMainSync(() -> editInput(screen).append("\n\n新增段落"));
+            sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
+            await(() -> onMain(() -> editorOverlay(screen) != null), "back asks before discarding");
+            onMain(() -> editorOverlay(screen).getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
+            check(onMain(() -> editInput(screen).getText().toString().endsWith("新增段落")), "continue keeps edit");
+            onMain(() -> dialog(screen).getButton(AlertDialog.BUTTON_POSITIVE).performClick());
+            await(() -> onMain(() -> screen.canAct() && dialog(screen) == null), "editor saved");
+            check(vault.entry(entry.id()).content().equals(original + "\n\n新增段落"), "exact source stored");
+
+            runOnMainSync(() -> {
+                View card = named(root(screen), image.content());
+                clipAction(screen, image.content(), "查看").performClick();
+                check(card != null, "fixture image card");
+            });
+            await(() -> onMain(() -> dialog(screen) != null
+                    && find(dialogRoot(screen), view -> view instanceof ZoomImage) != null), "fullscreen image");
+            await(() -> onMain(() -> {
+                View photo = find(dialogRoot(screen), view -> view instanceof ZoomImage);
+                return photo.getHeight() >= root(screen).getHeight() * 0.65;
+            }), "image fills viewer body");
+            ZoomImage photo = onMain(() -> (ZoomImage) find(dialogRoot(screen), view -> view instanceof ZoomImage));
+            float base = onMain(() -> scale(photo));
+            runOnMainSync(() -> {
+                long now = SystemClock.uptimeMillis();
+                for (int tap = 0; tap < 2; tap++) {
+                    tap(photo, now + tap * 90, MotionEvent.ACTION_DOWN);
+                    tap(photo, now + tap * 90 + 40, MotionEvent.ACTION_UP);
+                }
+            });
+            check(onMain(() -> scale(photo) > base), "double tap zooms");
+            onMain(() -> dialog(screen).getButton(AlertDialog.BUTTON_NEUTRAL).performClick());
+            check(onMain(() -> scale(photo) == base), "reset zoom");
+        } finally {
+            if (activity != null) {
+                MainActivity screen = activity;
+                runOnMainSync(screen::finish);
+            }
+            vault.delete(entry.id());
+            vault.delete(image.id());
+        }
+    }
+
+    private static View clipAction(MainActivity activity, String content, String label) {
+        return button((View) named(root(activity), content).getParent(), label);
+    }
+
+    private static View dialogRoot(MainActivity activity) {
+        return dialog(activity).getWindow().getDecorView();
+    }
+
+    private static EditText editInput(MainActivity activity) {
+        return (EditText) find(dialogRoot(activity), view -> view instanceof EditText);
+    }
+
+    private static AlertDialog editorOverlay(MainActivity activity) {
+        try {
+            var field = MainActivity.class.getDeclaredField("overlay");
+            field.setAccessible(true);
+            return (AlertDialog) field.get(activity);
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError(failure);
+        }
+    }
+
+    private static float scale(ZoomImage image) {
+        float[] values = new float[9];
+        image.getImageMatrix().getValues(values);
+        return values[android.graphics.Matrix.MSCALE_X];
+    }
+
+    private static void tap(View view, long time, int action) {
+        MotionEvent event = MotionEvent.obtain(time, time, action, view.getWidth() / 2f, view.getHeight() / 2f, 0);
+        view.onTouchEvent(event);
+        event.recycle();
     }
 
     private static int storedColor(Vault vault, String id) {
