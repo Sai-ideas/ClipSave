@@ -13,8 +13,9 @@ import android.text.StaticLayout;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityNodeInfo;
-import android.widget.ArrayAdapter;
+import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -37,13 +38,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.BiConsumer;
 import java.util.function.IntConsumer;
+import java.util.function.IntFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
 final class DraftWorkspace {
     static final int EXPORT_REQUEST = 14;
     private static final int BLOCK_SPACING = 10;
-    private static final String[] GROUP_COLORS = {"紫色", "藍色", "綠色", "琥珀色"};
 
     private final MainActivity activity;
     private final Vault vault;
@@ -53,6 +54,7 @@ final class DraftWorkspace {
     private Draft current;
     private Export export;
     private LinearLayout page;
+    private LinearLayout editorBar;
     private final Set<String> selectedIds = new LinkedHashSet<>();
     private boolean reading;
     private Map<String, Bitmap> cardImages = Collections.emptyMap();
@@ -78,6 +80,7 @@ final class DraftWorkspace {
         active = false;
         current = null;
         page = null;
+        editorBar = null;
         reloadShelf = false;
         resetEditorMode();
     }
@@ -139,6 +142,7 @@ final class DraftWorkspace {
 
     private void renderShelf(List<Draft> drafts, String empty) {
         current = null;
+        editorBar = null;
         resetEditorMode();
         active = true;
         page = activity.newPage(null, true);
@@ -211,44 +215,82 @@ final class DraftWorkspace {
     }
 
     private void showClipSelection(Draft draft, List<Vault.Entry> available, int remaining) {
-        ArrayList<String> labels = new ArrayList<>(available.size());
-        for (Vault.Entry entry : available) labels.add(clipLabel(entry));
-        ArrayList<String> rows = new ArrayList<>(labels);
+        DraftSheet sheet = new DraftSheet(activity, "插入剪輯", "插入 0 筆", draft.sensitive());
         LinkedHashSet<Integer> selection = new LinkedHashSet<>();
-        ArrayAdapter<String> adapter = new ArrayAdapter<>(activity,
-                android.R.layout.simple_list_item_multiple_choice, rows);
-        AlertDialog dialog = activity.show(new AlertDialog.Builder(activity)
-                .setTitle("插入剪輯")
-                .setAdapter(adapter, null)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("插入 0 筆", null));
-        ListView list = dialog.getListView();
-        list.setChoiceMode(ListView.CHOICE_MODE_MULTIPLE);
-        Button confirm = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-        confirm.setEnabled(false);
-        list.setOnItemClickListener((parent, row, position, id) -> {
-            if (list.isItemChecked(position)) selection.add(position);
-            else selection.remove(position);
-
-            for (int index = 0; index < labels.size(); index++) rows.set(index, labels.get(index));
+        IntFunction<String> heading = index -> {
             int order = 1;
             for (int selected : selection) {
-                rows.set(selected, order++ + ". " + labels.get(selected));
+                if (selected == index) return order + " · " + available.get(index).type();
+                order++;
             }
-            adapter.notifyDataSetChanged();
-
+            return available.get(index).type();
+        };
+        ListView list = pickerCards(available.size(), heading, index -> clipLabel(available.get(index)),
+                selection::contains);
+        sheet.body.addView(list, new LinearLayout.LayoutParams(-1, -1));
+        Button insert = sheet.apply;
+        insert.setEnabled(false);
+        list.setOnItemClickListener((parent, row, index, id) -> {
+            if (!selection.add(index)) selection.remove(index);
+            ((BaseAdapter) list.getAdapter()).notifyDataSetChanged();
             int count = selection.size();
-            dialog.setTitle(count > remaining ? "最多可插入 " + remaining + " 筆" : "插入剪輯");
-            confirm.setText("插入 " + count + " 筆");
-            confirm.setEnabled(count > 0 && count <= remaining);
+            insert.setText(count > remaining ? "最多可插入 " + remaining + " 筆" : "插入 " + count + " 筆");
+            insert.setEnabled(count > 0 && count <= remaining);
         });
-        confirm.setOnClickListener(view -> {
-            if (!activity.canAct() || !confirm.isEnabled()) return;
+        insert.setOnClickListener(view -> {
+            if (!activity.canAct() || !insert.isEnabled()) return;
             ArrayList<Vault.Entry> selected = new ArrayList<>(selection.size());
             for (int index : selection) selected.add(available.get(index));
-            dialog.dismiss();
+            sheet.dismiss();
             insert(draft, selected);
         });
+    }
+
+    private record PickerRow(LinearLayout frame, LinearLayout card, TextView title, TextView subtitle) {}
+
+    private ListView pickerCards(int count, IntFunction<String> titles, IntFunction<String> subtitles,
+                                 java.util.function.IntPredicate selected) {
+        ListView list = new ListView(activity);
+        list.setDivider(null);
+        list.setSelector(android.R.color.transparent);
+        list.setAdapter(new BaseAdapter() {
+            @Override public int getCount() { return count; }
+            @Override public Object getItem(int index) { return titles.apply(index); }
+            @Override public long getItemId(int index) { return index; }
+
+            @Override public View getView(int index, View recycled, ViewGroup parent) {
+                PickerRow row;
+                if (recycled == null) {
+                    LinearLayout frame = activity.column();
+                    frame.setPadding(0, 0, 0, activity.dp(6));
+                    LinearLayout card = panel();
+                    card.setMinimumHeight(activity.dp(48));
+                    TextView title = activity.text("", 15, ink, true);
+                    TextView subtitle = activity.text("", 15, muted, false);
+                    subtitle.setMaxLines(3);
+                    subtitle.setEllipsize(TextUtils.TruncateAt.END);
+                    card.addView(title);
+                    card.addView(subtitle, activity.margins(-1, -2, 4, 0));
+                    frame.addView(card);
+                    row = new PickerRow(frame, card, title, subtitle);
+                    frame.setTag(row);
+                } else row = (PickerRow) recycled.getTag();
+                boolean checked = selected.test(index);
+                row.title().setText(titles.apply(index));
+                String subtitle = subtitles.apply(index);
+                row.subtitle().setText(subtitle);
+                row.subtitle().setVisibility(subtitle == null ? View.GONE : View.VISIBLE);
+                GradientDrawable surface = activity.panel(17);
+                if (checked) {
+                    surface.setColor(surfaceSoft);
+                    surface.setStroke(activity.dp(1), accent);
+                }
+                row.card().setBackground(surface);
+                row.frame().setSelected(checked);
+                return row.frame();
+            }
+        });
+        return list;
     }
 
     private void insert(Draft draft, List<Vault.Entry> selected) {
@@ -288,7 +330,17 @@ final class DraftWorkspace {
         active = true;
         reloadShelf = false;
         current = draft;
-        page = activity.newPage(editorToolbar(draft), true);
+        if (sameDraft) {
+            activity.dismissDialog();
+            editorBar.removeAllViews();
+            page.removeAllViews();
+        } else {
+            editorBar = activity.column();
+            editorBar.setBackgroundColor(activity.getColor(R.color.vault_surface));
+            editorBar.setPadding(activity.dp(8), activity.dp(4), activity.dp(8), activity.dp(4));
+            page = activity.newPage(editorBar, true);
+        }
+        bindEditorToolbar(draft);
         ScrollView scroll = (ScrollView) page.getParent();
         if (draft.blocks().isEmpty()) {
             add(activity.text("插入素材或寫一段文字開始。", 15, muted, false), 16);
@@ -298,11 +350,7 @@ final class DraftWorkspace {
         if (offset > 0) scroll.post(() -> scroll.scrollTo(0, offset));
     }
 
-    private LinearLayout editorToolbar(Draft draft) {
-        LinearLayout toolbar = activity.column();
-        toolbar.setBackgroundColor(activity.getColor(R.color.vault_surface));
-        toolbar.setPadding(activity.dp(8), activity.dp(4), activity.dp(8), activity.dp(4));
-
+    private void bindEditorToolbar(Draft draft) {
         LinearLayout header = activity.row();
         Button back = textControl("清單", "返回拼報清單", this::goBack);
         back.setContentDescription("返回拼報清單");
@@ -322,7 +370,7 @@ final class DraftWorkspace {
         header.addView(identity, identityLayout);
         Button options = textControl("設定", "拼報設定", () -> editorOptions(draft));
         header.addView(options);
-        toolbar.addView(header);
+        editorBar.addView(header);
 
         LinearLayout actions = activity.row();
         if (selectedIds.isEmpty()) {
@@ -350,8 +398,7 @@ final class DraftWorkspace {
             Button delete = addToolbarAction(actions, "刪除", "刪除選取卡片", 1, () -> deleteSelected(draft));
             delete.setTextColor(danger);
         }
-        toolbar.addView(actions);
-        return toolbar;
+        editorBar.addView(actions);
     }
 
     private Button textControl(String label, String description, Runnable action) {
@@ -425,11 +472,7 @@ final class DraftWorkspace {
                            DraftReorder outer, Runnable order) {
         Draft.Group group = section.group();
         LinearLayout container = activity.column();
-        GradientDrawable frame = new GradientDrawable();
-        frame.setColor(surfaceSoft);
-        frame.setCornerRadius(activity.dp(17));
-        frame.setStroke(activity.dp(1), groupColor(group.color()));
-        container.setBackground(frame);
+        container.setBackground(GroupColors.frame(activity, group.color()));
         container.setPadding(activity.dp(8), activity.dp(6), activity.dp(8), activity.dp(8));
 
         boolean editing = !reading && selectedIds.isEmpty();
@@ -503,27 +546,12 @@ final class DraftWorkspace {
                         editText("修改串聯標題", "串聯標題", group.title(), Draft.MAX_TITLE, false,
                                 title -> saveDraft(draft, draft.updateGroup(group, title, group.color())));
                     } else if (which == 1) {
-                        activity.show(new AlertDialog.Builder(activity).setTitle("串聯顏色")
-                                .setSingleChoiceItems(GROUP_COLORS, colorIndex(group.color()), (colors, color) ->
-                                        saveDraft(draft, draft.updateGroup(group, group.title(), color)))
-                                .setNegativeButton("取消", null));
+                        GroupColors.show(activity, group, draft.sensitive(),
+                                color -> saveDraft(draft, draft.updateGroup(group, group.title(), color)));
                     } else {
                         saveDraft(draft, draft.ungroup(group));
                     }
                 }).setNegativeButton("取消", null));
-    }
-
-    private int colorIndex(int color) {
-        return color >= 0 && color < GROUP_COLORS.length ? color : 0;
-    }
-
-    private int groupColor(int color) {
-        return switch (colorIndex(color)) {
-            case 1 -> activity.getColor(R.color.pinbao_group_blue);
-            case 2 -> activity.getColor(R.color.pinbao_group_green);
-            case 3 -> activity.getColor(R.color.pinbao_group_amber);
-            default -> accent;
-        };
     }
 
     private LinearLayout blockCard(Draft draft, int index, DraftReorder reorder, Runnable order) {
@@ -610,13 +638,56 @@ final class DraftWorkspace {
 
     private void cardOptions(Draft draft, int index) {
         Draft.Block block = draft.blocks().get(index);
+        if (!block.image() && !block.sourceId().isEmpty()) {
+            activity.runForeground(() -> vault.draftSource(draft, index, false),
+                    source -> showCardOptions(draft, index, source));
+        } else {
+            showCardOptions(draft, index, null);
+        }
+    }
+
+    private void showCardOptions(Draft draft, int index, Vault.SourceChange source) {
+        Draft.Block block = draft.blocks().get(index);
         boolean editable = !block.image() && block.kind() != Draft.Block.Kind.DIVIDER;
-        String[] labels = editable ? new String[]{"編輯", "刪除"} : new String[]{"刪除"};
+        ArrayList<String> labels = new ArrayList<>();
+        if (editable) labels.add("編輯");
+        if (source != null) labels.add("從剪輯更新");
+        labels.add("刪除");
         activity.show(new AlertDialog.Builder(activity).setTitle("卡片選項")
-                .setItems(labels, (dialog, which) -> {
-                    if (editable && which == 0) editBlock(draft, index);
-                    else removeBlock(draft, index);
+                .setItems(labels.toArray(new String[0]), (dialog, which) -> {
+                    switch (labels.get(which)) {
+                        case "編輯" -> editBlock(draft, index);
+                        case "從剪輯更新" -> compareSource(draft, index, source.requiresVerification());
+                        default -> removeBlock(draft, index);
+                    }
                 }).setNegativeButton("取消", null));
+    }
+
+    private void compareSource(Draft draft, int index, boolean secure) {
+        activity.authorize(secure, "比較來源剪輯",
+                () -> activity.runForeground(() -> vault.draftSource(draft, index, secure), source -> {
+                    if (source == null || source.content() == null) {
+                        activity.toast("來源剪輯目前無法更新。");
+                        return;
+                    }
+                    LinearLayout body = activity.dialogBody();
+                    body.addView(sourceExcerpt("目前拼報", draft.blocks().get(index).content()));
+                    body.addView(sourceExcerpt("來源剪輯", source.content()), activity.margins(-1, -2, 8, 0));
+                    ScrollView scroll = new ScrollView(activity);
+                    scroll.addView(body);
+                    activity.show(new AlertDialog.Builder(activity).setTitle("從剪輯更新").setView(scroll)
+                            .setNegativeButton("取消", null)
+                            .setPositiveButton("更新卡片", (dialog, which) -> activity.runForeground(
+                                    () -> vault.refreshDraftSource(draft, index, source, secure),
+                                    this::renderDraft)), secure);
+                }));
+    }
+
+    private View sourceExcerpt(String label, String value) {
+        LinearLayout card = panel();
+        card.addView(activity.text(label, 13, accent, true));
+        card.addView(activity.text(value, 16, ink, false), activity.margins(-1, -2, 6, 0));
+        return card;
     }
 
     private void bindFoldAction(LinearLayout body, View content, Draft.Block block, Button fold, Runnable action) {
@@ -674,11 +745,13 @@ final class DraftWorkspace {
 
     private void chooseBlockKind(Draft draft) {
         Draft.Block.Kind[] kinds = Draft.Block.Kind.values();
-        String[] labels = new String[kinds.length];
-        for (int index = 0; index < kinds.length; index++) labels[index] = kinds[index].label;
-        activity.show(new AlertDialog.Builder(activity).setTitle("新增區塊")
-                .setItems(labels, (dialog, which) -> addBlock(draft, kinds[which]))
-                .setNegativeButton("取消", null));
+        DraftSheet sheet = new DraftSheet(activity, "新增區塊", null, draft.sensitive());
+        ListView list = pickerCards(kinds.length, index -> kinds[index].label, index -> null, index -> false);
+        sheet.body.addView(list, new LinearLayout.LayoutParams(-1, -1));
+        list.setOnItemClickListener((parent, row, index, id) -> {
+            sheet.dismiss();
+            addBlock(draft, kinds[index]);
+        });
     }
 
     private void addBlock(Draft draft, Draft.Block.Kind kind) {
@@ -949,9 +1022,8 @@ final class DraftWorkspace {
     }
 
     private static String clipLabel(Vault.Entry entry) {
-        if (entry.sensitive()) return entry.type() + " · 私密 · " + entry.privateTitle();
-        String content = entry.content();
-        return entry.type() + " · " + (content.length() > 70 ? content.substring(0, 70) + "…" : content);
+        if (entry.sensitive()) return "私密 · " + entry.privateTitle();
+        return entry.content();
     }
 
     private void editText(String title, String hint, String value, int limit, boolean multiline,

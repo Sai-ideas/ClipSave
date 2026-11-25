@@ -13,4 +13,5 @@
     <color name="pinbao_group_blue">#99C2F6</color>
     <color name="pinbao_group_green">#95D7AF</color>
     <color name="pinbao_group_amber">#F0BD7D</color>
+    <color name="pinbao_drag_ready">#493973</color>
 </resources>

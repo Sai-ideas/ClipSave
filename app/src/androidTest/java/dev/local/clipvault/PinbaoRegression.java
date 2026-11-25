@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Instrumentation;
 import android.content.Intent;
+import android.graphics.Color;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.view.InputDevice;
@@ -13,6 +14,7 @@ import android.view.ViewGroup;
 import android.view.ViewConfiguration;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
@@ -46,11 +48,12 @@ public final class PinbaoRegression extends Instrumentation {
             Vault vault = Vault.get(getTargetContext());
             arrangement();
             privacy(vault, UUID.randomUUID().toString());
+            sourceUpdates(vault, UUID.randomUUID().toString());
             reorder(vault, UUID.randomUUID().toString());
             workspace(vault, UUID.randomUUID().toString());
             var config = getTargetContext().getResources().getConfiguration();
             int dpi = getTargetContext().getResources().getDisplayMetrics().densityDpi;
-            report.putString("stream", "PASS checklist, privacy, folded cards, fixed navigation, toolbar and grouped drag at " + config.screenWidthDp
+            report.putString("stream", "PASS Pinbao source update, sheets, stable surface, and long-press drag at " + config.screenWidthDp
                     + "dp, font scale " + config.fontScale + ", density " + dpi + "dpi\n");
             finish(Activity.RESULT_OK, report);
         } catch (Throwable error) {
@@ -171,11 +174,47 @@ public final class PinbaoRegression extends Instrumentation {
         check(Draft.fromJson(legacy).equals(source), "legacy ungrouped draft opens unchanged");
     }
 
+    private static void sourceUpdates(Vault vault, String marker) throws Exception {
+        Vault.Entry entry = vault.addText(marker, false, "");
+        Draft draft = vault.createDraft("來源 " + marker);
+        try {
+            Draft current = vault.addDraftClips(draft.id(), List.of(entry.id()), false);
+            check(vault.draftSource(current, 0, false) == null, "equal source has no update");
+            vault.updateText(entry.id(), marker + " updated");
+            Vault.SourceChange change = vault.draftSource(current, 0, false);
+            check(change.content().endsWith(" updated"), "source difference");
+            Draft.Block original = current.blocks().get(0);
+            current = vault.refreshDraftSource(current, 0, change, false);
+            check(current.blocks().get(0).id().equals(original.id())
+                    && current.blocks().get(0).content().equals(change.content()), "update keeps block identity");
+            vault.updateText(entry.id(), marker + " again");
+            try {
+                vault.refreshDraftSource(current, 0, change, false);
+                throw new AssertionError("stale source accepted");
+            } catch (Vault.Limit expected) {}
+            vault.protectEntry(entry.id(), "");
+            current = vault.draft(draft.id());
+            check(vault.draftSource(current, 0, false).content() == null, "private preview gated");
+            try {
+                vault.refreshDraftSource(current, 0, vault.draftSource(current, 0, false), false);
+                throw new AssertionError("private update accepted without verification");
+            } catch (Vault.Limit expected) {}
+            check(vault.draftSource(current, 0, true).content().endsWith(" again"), "authorized source preview");
+            vault.delete(entry.id());
+            check(vault.draftSource(current, 0, true) == null
+                    && vault.draft(draft.id()).blocks().get(0).content().equals(change.content()), "missing source keeps copy");
+        } finally {
+            vault.deleteDraft(vault.draft(draft.id()));
+            vault.delete(entry.id());
+        }
+    }
+
     private void workspace(Vault vault, String marker) throws Exception {
         String name = "串聯驗收 " + marker.substring(0, 8);
         String longText = "第一行\n第二行\n第三行\n第四行\n第五行";
         String wrappedText = String.join(" ", java.util.Collections.nCopies(80, "自動換行"));
         Draft draft = vault.createDraft(name);
+        Vault.Entry source = vault.addText("插入驗收 " + marker, false, "");
         MainActivity ui = null;
         try {
             ArrayList<Draft.Block> blocks = new ArrayList<>();
@@ -194,7 +233,53 @@ public final class PinbaoRegression extends Instrumentation {
             await(() -> onMain(() -> activity.canAct() && named(root(activity), name) != null), "workspace shelf");
             onMain(() -> button((View) named(root(activity), name).getParent(), "開啟").performClick());
             await(() -> onMain(() -> activity.canAct() && named(root(activity), "排序項目 2") != null), "workspace editor");
+            View editorRoot = onMain(() -> (View) root(activity).findViewById(android.R.id.content));
             ScrollView content = onMain(() -> (ScrollView) find(root(activity), v -> v instanceof ScrollView));
+            onMain(() -> action(activity, "新增區塊").performClick());
+            runOnMainSync(() -> {
+                AlertDialog shown = dialog(activity);
+                ListView choices = (ListView) find(shown.getWindow().getDecorView(), v -> v instanceof ListView);
+                check(choices != null && choices.getCount() > 3, "card block picker");
+                shown.dismiss();
+            });
+            onMain(() -> action(activity, "插入剪輯").performClick());
+            await(() -> onMain(() -> {
+                AlertDialog shown = dialog(activity);
+                if (shown == null) return false;
+                ListView list = (ListView) find(shown.getWindow().getDecorView(), v -> v instanceof ListView);
+                return list != null && list.getChildCount() > 0;
+            }), "card clip picker");
+            runOnMainSync(() -> {
+                View dialogRoot = dialog(activity).getWindow().getDecorView();
+                ListView choices = (ListView) find(dialogRoot, v -> v instanceof ListView);
+                View first = choices.getChildAt(0);
+                check(first != null && named(first, source.content()) != null, "preview on clip card");
+                choices.performItemClick(first, 0, 0);
+                button(dialogRoot, "插入 1 筆").performClick();
+            });
+            await(() -> onMain(() -> activity.canAct() && named(root(activity), source.content()) != null), "insert card");
+            vault.updateText(source.id(), source.content() + " 已更新");
+            onMain(() -> cardAction(activity, source.content(), "卡片選項").performClick());
+            await(() -> onMain(() -> dialog(activity) != null), "source menu ready");
+            runOnMainSync(() -> {
+                ListView menu = dialog(activity).getListView();
+                check("從剪輯更新".equals(menu.getItemAtPosition(1)), "update option for differences");
+                menu.performItemClick(menu.getChildAt(1), 1, 1);
+            });
+            await(() -> onMain(() -> {
+                AlertDialog shown = dialog(activity);
+                Button confirm = shown == null ? null : shown.getButton(AlertDialog.BUTTON_POSITIVE);
+                return confirm != null && confirm.getText().equals("更新卡片");
+            }), "source comparison ready");
+            runOnMainSync(() -> {
+                AlertDialog shown = dialog(activity);
+                View layout = shown.getWindow().getDecorView();
+                check(named(layout, source.content()) != null && named(layout, source.content() + " 已更新") != null,
+                        "source comparison displays both values");
+                shown.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            });
+            await(() -> onMain(() -> activity.canAct()
+                    && named(root(activity), source.content() + " 已更新") != null), "source update rendered");
             Point export = onMain(() -> center(action(activity, "匯出 ZIP")));
             runOnMainSync(() -> content.scrollTo(0, 200));
             check(onMain(() -> content.getScrollY() > 0 && export.equals(center(action(activity, "匯出 ZIP")))),
@@ -211,6 +296,8 @@ public final class PinbaoRegression extends Instrumentation {
             onMain(() -> cardAction(activity, longText, "摺疊內文").performClick());
             await(() -> onMain(() -> activity.canAct() && cardAction(activity, longText, "展開內文").isShown()),
                     "collapse with triangle");
+            check(onMain(() -> content == find(root(activity), v -> v instanceof ScrollView)
+                    && editorRoot == root(activity).findViewById(android.R.id.content)), "fold retains editor surface");
 
             List<Point> toolbarPositions = onMain(() -> toolbarPositions(activity, "切換為精簡模式"));
             onMain(() -> action(activity, "切換為精簡模式").performClick());
@@ -250,7 +337,10 @@ public final class PinbaoRegression extends Instrumentation {
                         && "刪除".equals(options.getListView().getItemAtPosition(1)), "card menu");
                 options.dismiss();
             });
+            ScrollView beforeSelection = onMain(() -> (ScrollView) find(root(activity), v -> v instanceof ScrollView));
             longPress(onMain(() -> center(body(activity, "排序項目 0"))));
+            check(onMain(() -> beforeSelection == find(root(activity), v -> v instanceof ScrollView)),
+                    "selection retains scroll container");
             onMain(() -> body(activity, "排序項目 2").performClick());
             check(onMain(() -> named(root(activity), "已選 2 張") != null), "selection count");
             onMain(() -> action(activity, "串聯選取卡片").performClick());
@@ -263,6 +353,35 @@ public final class PinbaoRegression extends Instrumentation {
             await(() -> storedOrder(vault, draft.id(), blocks.get(0), blocks.get(2))
                     && onMain(() -> activity.canAct()
                     && action(activity, "串聯選項 驗收串聯") != null), "group created");
+            onMain(() -> action(activity, "串聯選項 驗收串聯").performClick());
+            runOnMainSync(() -> {
+                ListView settings = dialog(activity).getListView();
+                settings.performItemClick(settings.getChildAt(1), 1, 1);
+            });
+            runOnMainSync(() -> {
+                View palette = dialog(activity).getWindow().getDecorView();
+                check(button(palette, "自訂顏色") != null, "advanced color sliders expandable");
+                button(palette, "玫瑰").performClick();
+                check(button(palette, "✓ 玫瑰") != null, "new preset selected");
+                button(palette, "套用").performClick();
+            });
+            await(() -> onMain(activity::canAct) && storedColor(vault, draft.id()) == 4, "preset persisted");
+            onMain(() -> action(activity, "串聯選項 驗收串聯").performClick());
+            runOnMainSync(() -> {
+                ListView settings = dialog(activity).getListView();
+                settings.performItemClick(settings.getChildAt(1), 1, 1);
+            });
+            runOnMainSync(() -> {
+                View palette = dialog(activity).getWindow().getDecorView();
+                button(palette, "自訂顏色").performClick();
+                View hue = find(palette, v -> "色相".equals(v.getContentDescription()));
+                Bundle progress = new Bundle();
+                progress.putFloat(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, 179);
+                check(hue.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo
+                        .AccessibilityAction.ACTION_SET_PROGRESS.getId(), progress), "custom hue slider");
+                button(palette, "套用").performClick();
+            });
+            await(() -> onMain(activity::canAct) && storedColor(vault, draft.id()) < 0, "custom color persisted");
             onMain(() -> action(activity, "摺疊串聯 驗收串聯").performClick());
             await(() -> onMain(() -> activity.canAct() && named(root(activity), "排序項目 2") == null), "group folded");
             Point heading = onMain(() -> center(action(activity, "排序串聯 驗收串聯，拖曳可移動整組")));
@@ -308,6 +427,15 @@ public final class PinbaoRegression extends Instrumentation {
                 runOnMainSync(activity::finish);
             }
             vault.deleteDraft(vault.draft(draft.id()));
+            vault.delete(source.id());
+        }
+    }
+
+    private static int storedColor(Vault vault, String id) {
+        try {
+            return vault.draft(id).groups().get(0).color();
+        } catch (Exception failure) {
+            throw new AssertionError(failure);
         }
     }
 
@@ -353,6 +481,28 @@ public final class PinbaoRegression extends Instrumentation {
             await(() -> onMain(() -> activity.canAct() && named(root(activity), title) != null), "shelf");
             onMain(() -> button((View) named(root(activity), title).getParent(), "開啟").performClick());
             await(() -> onMain(() -> activity.canAct() && named(root(activity), "排序項目 1") != null), "editor");
+            Point quickStart = onMain(() -> center(dragHandle(activity, 1)));
+            long swipe = SystemClock.uptimeMillis();
+            dragEvent(swipe, MotionEvent.ACTION_DOWN, quickStart);
+            Point swipeEnd = new Point(quickStart.x(), quickStart.y() - 100);
+            for (int step = 1; step <= 5; step++) {
+                dragEvent(swipe, MotionEvent.ACTION_MOVE, new Point(quickStart.x(), quickStart.y() - 20 * step));
+                SystemClock.sleep(28);
+            }
+            SystemClock.sleep(150);
+            dragEvent(swipe, MotionEvent.ACTION_UP, swipeEnd);
+            ScrollView editorScroll = onMain(() -> (ScrollView) find(root(activity), v -> v instanceof ScrollView));
+            check(onMain(editorScroll::getScrollY) > 0, "quick swipe on header scrolls");
+            check(storedOrder(vault, draft.id(), blocks.get(0), blocks.get(1)), "quick swipe does not reorder");
+            runOnMainSync(() -> editorScroll.scrollTo(0, 0));
+            Point press = onMain(() -> center(dragHandle(activity, 0)));
+            long hold = SystemClock.uptimeMillis();
+            dragEvent(hold, MotionEvent.ACTION_DOWN, press);
+            await(() -> onMain(() -> ((Button) dragHandle(activity, 0)).getCurrentTextColor() == Color.WHITE),
+                    "white ready cue");
+            dragEvent(hold, MotionEvent.ACTION_UP, press);
+            await(() -> onMain(() -> ((Button) dragHandle(activity, 0)).getCurrentTextColor() != Color.WHITE),
+                    "cue clears when released");
             Point handle = onMain(() -> center(dragHandle(activity, 0)));
             Point afterSecond = onMain(() -> {
                 View second = card(activity, 1);
@@ -402,6 +552,7 @@ public final class PinbaoRegression extends Instrumentation {
     private long startDrag(Point start, Point end) {
         long down = SystemClock.uptimeMillis();
         dragEvent(down, MotionEvent.ACTION_DOWN, start);
+        SystemClock.sleep(ViewConfiguration.getLongPressTimeout() + 140);
         for (int index = 1; index <= 8; index++) {
             float fraction = index / 8f;
             dragEvent(down, MotionEvent.ACTION_MOVE, new Point(start.x() + (end.x() - start.x()) * fraction,

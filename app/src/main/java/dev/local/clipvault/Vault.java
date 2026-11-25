@@ -353,6 +353,36 @@ final class Vault {
         return updateDraft(current, current.withContent(current.title(), blocks));
     }
 
+    record SourceChange(String content, boolean requiresVerification) {}
+
+    synchronized SourceChange draftSource(Draft original, int index, boolean authenticated) throws Exception {
+        Draft current = draft(original.id());
+        if (!current.equals(original)) throw new Limit("拼報已有變更，請重新開啟。");
+        Draft.Block block = current.blocks().get(index);
+        if (block.sourceId().isEmpty() || block.image()) return null;
+        Entry source;
+        try {
+            source = entry(block.sourceId());
+        } catch (Limit missing) {
+            return null;
+        }
+        if (source.attachment() || source.content().equals(block.content())) return null;
+        boolean secure = current.sensitive() || source.sensitive();
+        return new SourceChange(!secure || authenticated ? source.content() : null, secure);
+    }
+
+    synchronized Draft refreshDraftSource(Draft original, int index, SourceChange expected,
+                                          boolean authenticated) throws Exception {
+        SourceChange latest = draftSource(original, index, authenticated);
+        if (latest != null && latest.requiresVerification() && !authenticated) {
+            throw new Limit("請先驗證私密內容。");
+        }
+        if (latest == null || !latest.equals(expected)) throw new Limit("來源有變更，請重新比較。");
+        ArrayList<Draft.Block> blocks = new ArrayList<>(original.blocks());
+        blocks.set(index, blocks.get(index).withContent(latest.content()));
+        return updateDraft(original, original.withContent(original.title(), blocks));
+    }
+
     synchronized void deleteDraft(Draft confirmed) throws Exception {
         Draft current = draft(confirmed.id());
         if (!current.equals(confirmed)) throw new Limit("拼報已有變更，請重新確認刪除。");

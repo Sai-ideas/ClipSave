@@ -1190,7 +1190,13 @@ public final class MainActivity extends Activity {
         return shown;
     }
 
-    private void dismissDialog() {
+    AlertDialog show(AlertDialog.Builder builder, boolean sensitive) {
+        AlertDialog shown = show(builder);
+        privateDialog = sensitive;
+        return shown;
+    }
+
+    void dismissDialog() {
         if (dialog != null) dialog.dismiss();
         dialog = null;
         privateDialog = false;
