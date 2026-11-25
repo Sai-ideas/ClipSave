@@ -32,6 +32,7 @@ import javax.crypto.spec.GCMParameterSpec;
 
 final class Vault {
     static final int MAX_TEXT = 20_000;
+    static final int MAX_LINK = 20_000;
     static final int MAX_PRIVATE_DESCRIPTION = 80;
     static final int MAX_ATTACHMENT = 16 * 1024 * 1024;
     private static final int MAX_ENTRIES = 200;
@@ -44,25 +45,28 @@ final class Vault {
     private static Vault instance;
 
     record Entry(String id, String mime, String content, long savedAt, int bytes,
-                 boolean pinned, boolean starred, boolean sensitive, String tag, String privateDescription) {
+                 boolean pinned, boolean starred, boolean sensitive, String tag, String privateDescription,
+                 String url, TextFormat format) {
         boolean attachment() { return !mime.equals("text/plain"); }
 
         String type() {
             if (mime.equals("application/pdf")) return "PDF";
             if (mime.startsWith("image/")) return "圖片";
-            return isWebLink(content) ? "連結" : "文字";
+            return url.isEmpty() ? "文字" : "連結";
         }
+
+        String displayContent() { return content.isEmpty() ? url : content; }
 
         String privateTitle() {
             return privateDescription.isEmpty() ? "****" : privateDescription;
         }
 
         Entry withOptions(boolean pin, boolean star, String label, String description) {
-            return new Entry(id, mime, content, savedAt, bytes, pin, star, sensitive, label, description);
+            return new Entry(id, mime, content, savedAt, bytes, pin, star, sensitive, label, description, url, format);
         }
 
         Entry protect(String description) {
-            return new Entry(id, mime, content, savedAt, bytes, pinned, starred, true, tag, description);
+            return new Entry(id, mime, content, savedAt, bytes, pinned, starred, true, tag, description, url, format);
         }
 
         JSONObject toJson() throws Exception {
@@ -70,14 +74,22 @@ final class Vault {
                     .put("id", id).put("mime", mime).put("content", content)
                     .put("savedAt", savedAt).put("bytes", bytes).put("pinned", pinned)
                     .put("starred", starred).put("sensitive", sensitive).put("tag", tag)
-                    .put("privateDescription", privateDescription);
+                    .put("privateDescription", privateDescription).put("url", url).put("format", format.name());
         }
 
         static Entry fromJson(JSONObject json) throws Exception {
-            return new Entry(json.getString("id"), json.getString("mime"), json.getString("content"),
+            String mime = json.getString("mime");
+            String content = json.getString("content");
+            String url = json.optString("url", "");
+            if (!json.has("url") && mime.equals("text/plain") && isWebLink(content)) {
+                url = content.trim();
+                content = "";
+            }
+            return new Entry(json.getString("id"), mime, content,
                     json.getLong("savedAt"), json.getInt("bytes"), json.getBoolean("pinned"),
                     json.getBoolean("starred"), json.getBoolean("sensitive"), json.getString("tag"),
-                    json.optString("privateDescription", ""));
+                    json.optString("privateDescription", ""), url,
+                    TextFormat.stored(json.optString("format"), TextFormat.LEGACY));
         }
     }
 
@@ -136,7 +148,13 @@ final class Vault {
     }
 
     synchronized Entry addText(String text, boolean sensitive, String description) throws Exception {
-        validateText(text);
+        return addText(isWebLink(text) ? "" : text, isWebLink(text) ? text.trim() : "",
+                TextFormat.PLAIN, sensitive, description);
+    }
+
+    synchronized Entry addText(String text, String url, TextFormat format, boolean sensitive, String description)
+            throws Exception {
+        url = validateClipText(text, url);
         String privateDescription = sensitive ? normalizeDescription(description) : "";
         load();
         prune();
@@ -144,17 +162,18 @@ final class Vault {
         ArrayList<Entry> next = new ArrayList<>(entries);
         for (int i = 0; i < next.size(); i++) {
             Entry old = next.get(i);
-            if (!old.attachment() && old.content().equals(text)) {
+            if (!old.attachment() && old.content().equals(text) && old.url().equals(url)) {
                 Entry updated = new Entry(old.id(), old.mime(), text, now, 0, old.pinned(),
                         old.starred(), old.sensitive() || sensitive, old.tag(),
-                        old.sensitive() ? old.privateDescription() : privateDescription);
+                        old.sensitive() ? old.privateDescription() : privateDescription, url,
+                        format == TextFormat.MARKDOWN ? format : old.format());
                 next.set(i, updated);
                 commit(next, retention);
                 return updated;
             }
         }
         Entry entry = new Entry(UUID.randomUUID().toString(), "text/plain", text, now, 0,
-                false, false, sensitive, "", privateDescription);
+                false, false, sensitive, "", privateDescription, url, format);
         insert(next, entry);
         return entry;
     }
@@ -168,18 +187,28 @@ final class Vault {
     }
 
     synchronized void updateText(String id, String text) throws Exception {
-        validateText(text);
         Entry current = entry(id);
-        if (current.attachment()) throw new Limit("只有文字與連結可以編輯。");
-        if (current.content().equals(text)) return;
-        update(new Entry(id, current.mime(), text, current.savedAt(), current.bytes(),
-                current.pinned(), current.starred(), current.sensitive(), current.tag(),
-                current.privateDescription()));
+        updateText(id, text, current.url(), current.format());
     }
 
-    private static void validateText(String text) throws Limit {
-        if (text.trim().isEmpty()) throw new Limit("沒有可儲存的文字。");
+    synchronized void updateText(String id, String text, String url, TextFormat format) throws Exception {
+        Entry current = entry(id);
+        if (current.attachment()) throw new Limit("只有文字與連結可以編輯。");
+        url = validateClipText(text, url);
+        Entry changed = new Entry(id, current.mime(), text, current.savedAt(), current.bytes(),
+                current.pinned(), current.starred(), current.sensitive(), current.tag(),
+                current.privateDescription(), url, format);
+        if (!changed.equals(current)) update(changed);
+    }
+
+    private static String validateClipText(String text, String url) throws Limit {
+        if (text.trim().isEmpty() && url.trim().isEmpty()) throw new Limit("請輸入內文或主要網址。");
         if (text.length() > MAX_TEXT) throw new Limit("文字超過 20,000 個字元。");
+        String trimmed = url.trim();
+        if (!trimmed.isEmpty() && (trimmed.length() > MAX_LINK || !isWebLink(trimmed))) {
+            throw new Limit("請輸入有效的 HTTP 或 HTTPS 網址。");
+        }
+        return trimmed;
     }
 
     private static String normalizeDescription(String value) throws Limit {
@@ -199,7 +228,7 @@ final class Vault {
         long used = storedAttachments(next, drafts).values().stream().mapToLong(Integer::longValue).sum();
         if (used + data.length > MAX_MEDIA_TOTAL) throw new Limit("附件空間已滿（96 MiB）。");
         Entry entry = new Entry(UUID.randomUUID().toString(), mime, name, System.currentTimeMillis(),
-                data.length, false, false, sensitive, "", sensitive ? normalizeDescription(description) : "");
+                data.length, false, false, sensitive, "", sensitive ? normalizeDescription(description) : "", "", TextFormat.PLAIN);
         File encrypted = file(entry.id());
         write(new AtomicFile(encrypted), encrypt(data, entry.id()));
         try {
@@ -313,10 +342,10 @@ final class Vault {
         Draft current = draft(original.id());
         if (!current.equals(original)) throw new Limit("拼報已有變更，請重新開啟。");
         if (changed.blocks().size() > Draft.MAX_BLOCKS) throw new Limit("每份拼報最多 50 個區塊。");
-        int size = changed.blocks().stream().mapToInt(block -> block.content().length()).sum();
+        int size = changed.blocks().stream().mapToInt(block -> block.content().length() + block.url().length()).sum();
         for (Draft draft : drafts) {
             if (!draft.id().equals(current.id())) {
-                size += draft.blocks().stream().mapToInt(block -> block.content().length()).sum();
+                size += draft.blocks().stream().mapToInt(block -> block.content().length() + block.url().length()).sum();
             }
         }
         if (size > MAX_DRAFT_TEXT) throw new Limit("拼報總文字量已達上限。");
@@ -359,7 +388,7 @@ final class Vault {
         return updateDraft(current, current.withContent(current.title(), blocks));
     }
 
-    record SourceChange(String content, boolean requiresVerification) {}
+    record SourceChange(String content, String url, TextFormat format, boolean requiresVerification) {}
 
     synchronized Set<String> draftSourceDifferences(Draft original) throws Exception {
         Draft current = draft(original.id());
@@ -376,7 +405,9 @@ final class Vault {
     }
 
     private static boolean sourceDiffers(Draft.Block block, Entry source) {
-        return !block.image() && source != null && !source.attachment() && !source.content().equals(block.content());
+        return !block.image() && source != null && !source.attachment()
+                && (!source.content().equals(block.content()) || !source.url().equals(block.url())
+                || source.format().markdown(source.content()) != block.format().markdown(block.content()));
     }
 
     synchronized SourceChange draftSource(Draft original, int index, boolean authenticated) throws Exception {
@@ -392,7 +423,8 @@ final class Vault {
         }
         if (!sourceDiffers(block, source)) return null;
         boolean secure = current.sensitive() || source.sensitive();
-        return new SourceChange(!secure || authenticated ? source.content() : null, secure);
+        if (secure && !authenticated) return new SourceChange(null, null, null, true);
+        return new SourceChange(source.content(), source.url(), source.format(), secure);
     }
 
     synchronized Draft refreshDraftSource(Draft original, int index, SourceChange expected,
@@ -403,7 +435,7 @@ final class Vault {
         }
         if (latest == null || !latest.equals(expected)) throw new Limit("來源有變更，請重新比較。");
         ArrayList<Draft.Block> blocks = new ArrayList<>(original.blocks());
-        blocks.set(index, blocks.get(index).withContent(latest.content()));
+        blocks.set(index, blocks.get(index).withText(latest.content(), latest.url(), latest.format()));
         return updateDraft(original, original.withContent(original.title(), blocks));
     }
 

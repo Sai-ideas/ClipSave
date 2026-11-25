@@ -14,14 +14,14 @@ android {
         applicationId 'dev.local.clipvault'
         minSdk 29
         targetSdk 35
-        versionCode 9
-        versionName '0.6.0'
+        versionCode 10
+        versionName '0.7.0'
         testInstrumentationRunner 'dev.local.clipvault.PinbaoRegression'
     }
 
     packaging {
         resources {
-            // Both CommonMark artifacts include the same license.
+            // CommonMark artifacts include the same license.
             pickFirsts += 'META-INF/LICENSE.txt'
         }
     }
@@ -35,4 +35,6 @@ android {
 dependencies {
     implementation 'org.commonmark:commonmark:0.24.0'
     implementation 'org.commonmark:commonmark-ext-task-list-items:0.24.0'
+    implementation 'org.commonmark:commonmark-ext-autolink:0.24.0'
+    implementation 'org.nibor.autolink:autolink:0.11.0'
 }

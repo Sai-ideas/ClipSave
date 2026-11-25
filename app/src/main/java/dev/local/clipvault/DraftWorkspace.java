@@ -25,6 +25,7 @@ import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.security.GeneralSecurityException;
@@ -581,8 +582,7 @@ final class DraftWorkspace {
         Draft.Block.Kind kind = block.kind();
         Button fold = null;
         if (!reading) {
-            String type = block.image() ? "圖片" : kind == Draft.Block.Kind.TEXT
-                    && Vault.isWebLink(block.content()) ? "網址" : kind.label;
+            String type = block.image() ? "圖片" : kind == Draft.Block.Kind.TEXT && !block.url().isEmpty() ? "網址" : kind.label;
             LinearLayout header = activity.row();
             Button handle = dragTitle(type, "排序卡片，" + type + "，可拖曳或點按排序", order);
             handle.setEnabled(editing);
@@ -697,8 +697,10 @@ final class DraftWorkspace {
                         return;
                     }
                     LinearLayout body = activity.dialogBody();
-                    body.addView(sourceExcerpt("目前拼報", draft.blocks().get(index).content()));
-                    body.addView(sourceExcerpt("來源剪輯", source.content()), activity.margins(-1, -2, 8, 0));
+                    Draft.Block block = draft.blocks().get(index);
+                    body.addView(sourceExcerpt("目前拼報", block.content(), block.url(), block.format()));
+                    body.addView(sourceExcerpt("來源剪輯", source.content(), source.url(), source.format()),
+                            activity.margins(-1, -2, 8, 0));
                     ScrollView scroll = new ScrollView(activity);
                     scroll.addView(body);
                     activity.show(new AlertDialog.Builder(activity).setTitle("從剪輯更新").setView(scroll)
@@ -709,10 +711,12 @@ final class DraftWorkspace {
                 }));
     }
 
-    private View sourceExcerpt(String label, String value) {
+    private View sourceExcerpt(String label, String value, String url, TextFormat format) {
         LinearLayout card = panel();
         card.addView(activity.text(label, 13, accent, true));
-        card.addView(activity.text(value, 16, ink, false), activity.margins(-1, -2, 6, 0));
+        if (!value.isEmpty()) card.addView(activity.text(value, 16, ink, false), activity.margins(-1, -2, 6, 0));
+        if (!url.isEmpty()) card.addView(activity.text(url, 15, ink, false), activity.margins(-1, -2, 4, 0));
+        card.addView(activity.text(format.markdown(value) ? "Markdown" : "純文字", 12, muted, false));
         return card;
     }
 
@@ -974,21 +978,38 @@ final class DraftWorkspace {
     }
 
     private void preview(Draft draft) {
-        activity.runForeground(() -> loadImages(draft, Collections.emptyMap(), false), images -> {
-            ScrollView scroll = new ScrollView(activity);
-            LinearLayout body = activity.dialogBody();
-            scroll.addView(body);
-            body.addView(activity.text(draft.title(), 22, ink, true));
-            for (Draft.Block block : draft.blocks()) {
-                body.addView(previewBlock(block, images), activity.margins(-1, -2, 12, 0));
-            }
-            activity.show(new AlertDialog.Builder(activity).setTitle("文章預覽").setView(scroll)
-                    .setPositiveButton("關閉", null));
+        activity.runForeground(() -> articleImages(draft, cardImages), images -> {
+            MarkdownPreview preview = new MarkdownPreview(activity, activity::openLink);
+            android.widget.FrameLayout content = ContentEditor.fillHeight(preview);
+            content.setPadding(activity.dp(18), 0, activity.dp(18), 0);
+            AlertDialog dialog = activity.show(new AlertDialog.Builder(activity).setTitle("文章預覽")
+                    .setView(content).setPositiveButton("關閉", null), draft.sensitive(), () -> {
+                        content.removeView(preview);
+                        preview.destroy();
+                    });
+            ContentEditor.fullscreen(activity, dialog);
+            if (!draft.sensitive()) activity.keepPreviewWhileBackgrounded();
+            preview.render(() -> Article.render(draft), images);
         });
     }
 
+    private Map<String, byte[]> articleImages(Draft draft, Map<String, Bitmap> cached) throws Exception {
+        Map<String, Bitmap> bitmaps = loadImages(draft, cached, true);
+        Map<String, String> names = Article.imageNames(draft);
+        Map<String, byte[]> result = new HashMap<>();
+        for (Map.Entry<String, Bitmap> image : bitmaps.entrySet()) {
+            if (image.getValue() == null) continue;
+            ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+            if (image.getValue().compress(Bitmap.CompressFormat.PNG, 100, encoded)) {
+                result.put(names.get(image.getKey()), encoded.toByteArray());
+            }
+        }
+        return result;
+    }
+
     private void copy(Draft draft) {
-        Runnable copy = () -> activity.copyArticle("剪存文章", Article.render(draft, false));
+        Runnable copy = () -> activity.runForeground(() -> Article.exportMarkdown(draft),
+                markdown -> activity.copyArticle("剪存文章", markdown));
         if (draft.sensitive()) {
             activity.confirm("複製私密拼報", "全文會寫入系統剪貼簿，可貼到其他 App。", "複製", copy);
         } else {
@@ -1049,7 +1070,7 @@ final class DraftWorkspace {
 
     private static String clipLabel(Vault.Entry entry) {
         if (entry.sensitive()) return "私密 · " + entry.privateTitle();
-        return entry.content();
+        return entry.displayContent();
     }
 
     private void editText(String title, String hint, String value, int limit, boolean multiline,

@@ -15,6 +15,7 @@ import android.widget.PopupMenu;
 
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 final class ContentEditor {
     final LinearLayout body;
@@ -23,7 +24,13 @@ final class ContentEditor {
     private final FrameLayout content;
     private final String original;
     private MarkdownPreview preview;
-    private Button previewButton;
+    private LinearLayout tabs;
+    private Button readTab;
+    private Button editTab;
+    private Button markup;
+    private Supplier<String> readingSource;
+    private AlertDialog dialog;
+    private boolean startReading;
 
     ContentEditor(MainActivity activity, String hint, String original, int limit, boolean multiline) {
         this.activity = activity;
@@ -41,15 +48,27 @@ final class ContentEditor {
         body.addView(content, new LinearLayout.LayoutParams(-1, multiline ? 0 : -2, multiline ? 1 : 0));
     }
 
-    void enableMarkdown() {
+    void enableReading(Supplier<String> source, boolean initiallyReading) {
+        readingSource = source;
+        startReading = initiallyReading;
         input.setTypeface(Typeface.MONOSPACE);
-        LinearLayout toolbar = activity.row();
-        Button markup = tool("插入語法", () -> {});
+        tabs = activity.row();
+        readTab = tool("檢視", () -> selectReading(true));
+        editTab = tool("編輯", () -> selectReading(false));
+        tabs.addView(readTab, new LinearLayout.LayoutParams(0, -2, 1));
+        tabs.addView(editTab, new LinearLayout.LayoutParams(0, -2, 1));
+        body.addView(tabs, 0);
+
+        markup = tool("插入語法", () -> {});
         markup.setOnClickListener(view -> showMarkupMenu(markup));
-        previewButton = tool("Markdown 預覽", this::togglePreview);
-        toolbar.addView(markup, new LinearLayout.LayoutParams(0, -2, 1));
-        toolbar.addView(previewButton, new LinearLayout.LayoutParams(0, -2, 1));
-        body.addView(toolbar, 0);
+        body.addView(markup, 1);
+    }
+
+    void allowMarkup(boolean enabled) {
+        if (markup != null) {
+            markup.setEnabled(enabled);
+            markup.setAlpha(enabled ? 1f : 0.45f);
+        }
     }
 
     private Button tool(String label, Runnable action) {
@@ -57,19 +76,33 @@ final class ContentEditor {
                 activity.getColor(R.color.vault_accent), action);
     }
 
-    private void togglePreview() {
-        if (preview != null) {
+    private void selectReading(boolean reading) {
+        if (!activity.canAct()) return;
+        if (reading && preview == null) {
+            activity.getSystemService(InputMethodManager.class).hideSoftInputFromWindow(input.getWindowToken(), 0);
+            preview = new MarkdownPreview(activity, activity::openLink);
+            content.addView(preview, new FrameLayout.LayoutParams(-1, -1));
+            preview.render(readingSource.get());
+        } else if (!reading) {
             closePreview();
-            input.setVisibility(View.VISIBLE);
-            previewButton.setText("Markdown 預覽");
-            return;
         }
-        activity.getSystemService(InputMethodManager.class).hideSoftInputFromWindow(input.getWindowToken(), 0);
-        preview = new MarkdownPreview(activity);
-        content.addView(preview, new FrameLayout.LayoutParams(-1, -1));
-        preview.render(input.getText().toString());
-        input.setVisibility(View.GONE);
-        previewButton.setText("返回編輯");
+        displayMode(reading);
+    }
+
+    private void displayMode(boolean reading) {
+        input.setVisibility(reading ? View.GONE : View.VISIBLE);
+        for (int index = 0; index < body.getChildCount(); index++) {
+            View child = body.getChildAt(index);
+            if (child != tabs && child != content) child.setVisibility(reading ? View.GONE : View.VISIBLE);
+        }
+        readTab.setSelected(reading);
+        editTab.setSelected(!reading);
+        readTab.setTextColor(activity.getColor(reading ? R.color.vault_on_accent : R.color.vault_text));
+        editTab.setTextColor(activity.getColor(reading ? R.color.vault_text : R.color.vault_on_accent));
+        activity.styleModeButton(readTab, reading);
+        activity.styleModeButton(editTab, !reading);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setVisibility(reading ? View.GONE : View.VISIBLE);
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setText(reading ? "關閉" : "取消");
     }
 
     private void closePreview() {
@@ -80,7 +113,6 @@ final class ContentEditor {
     }
 
     private void showMarkupMenu(View anchor) {
-        if (preview != null) togglePreview();
         PopupMenu menu = new PopupMenu(activity, anchor);
         String[][] snippets = {
             {"標題", "# ", "", "標題", "line"},
@@ -131,7 +163,12 @@ final class ContentEditor {
 
     void show(String title, boolean fullscreen, BooleanSupplier sensitive, BooleanSupplier optionsChanged,
               Consumer<String> save) {
-        AlertDialog dialog = activity.show(new AlertDialog.Builder(activity)
+        show(title, fullscreen, sensitive, optionsChanged, () -> false, save);
+    }
+
+    void show(String title, boolean fullscreen, BooleanSupplier sensitive, BooleanSupplier optionsChanged,
+              BooleanSupplier hasAlternativeContent, Consumer<String> save) {
+        dialog = activity.show(new AlertDialog.Builder(activity)
                 .setTitle(title).setView(fullscreen ? fillHeight(body) : body).setNegativeButton("取消", null).setPositiveButton("儲存", null),
                 sensitive.getAsBoolean(), this::closePreview);
         activity.keepEditorWhileBackgrounded();
@@ -167,12 +204,12 @@ final class ContentEditor {
             if (!activity.canAct()) return;
             String value = input.getText().toString();
             if (value.trim().isEmpty()) {
-                if (preview != null) togglePreview();
-                input.setError("請輸入文字");
+                        input.setError("請輸入文字");
                 return;
             }
             save.accept(value);
         });
+        if (readingSource != null) selectReading(startReading);
     }
 
     private void showDiscard(AlertDialog editor) {

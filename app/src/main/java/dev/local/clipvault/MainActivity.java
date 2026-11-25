@@ -98,6 +98,7 @@ public final class MainActivity extends Activity {
     private PrivateAction privateAction;
     private boolean privateDialog;
     private boolean editingDialog;
+    private boolean keepDialog;
     private DraftWorkspace workspace;
     private int nextPrivateRequest = 100;
     private int foregroundVersion;
@@ -173,7 +174,7 @@ public final class MainActivity extends Activity {
             loaded = false;
             search = "";
             showLocked();
-        } else if (!editingDialog) {
+        } else if (!editingDialog && !keepDialog) {
             dismissDialog();
         }
         super.onStop();
@@ -191,7 +192,7 @@ public final class MainActivity extends Activity {
             cancelPrivateAction();
             workspace.cancelExport();
             pendingShare = intent;
-            if (!locked && workspace.active() && !editingDialog) openClips();
+            if (!locked && workspace.active() && !editingDialog && !keepDialog) openClips();
             else consumeImport();
         }
     }
@@ -417,7 +418,8 @@ public final class MainActivity extends Activity {
             if (filter == 2 && !reading.contains(entry.id())) continue;
             if (filter > 2 && !FILTERS[filter].equals(entry.type())) continue;
             if (!query.isEmpty() && (entry.sensitive()
-                    || (!entry.content().toLowerCase(Locale.ROOT).contains(query)
+                    || (!entry.displayContent().toLowerCase(Locale.ROOT).contains(query)
+                    && !entry.url().toLowerCase(Locale.ROOT).contains(query)
                     && !entry.tag().toLowerCase(Locale.ROOT).contains(query)))) continue;
             count++;
             results.addView(card(entry), margins(-1, -2, 0, 8));
@@ -458,9 +460,14 @@ public final class MainActivity extends Activity {
         heading.addView(details, detailsLayout);
         card.addView(heading);
 
-        TextView content = text(entry.sensitive() ? entry.privateTitle() : entry.content(), 17, ink, true);
+        TextView content = text(entry.sensitive() ? entry.privateTitle() : entry.displayContent(), 17, ink, true);
         if (entry.sensitive()) content.setContentDescription(entry.privateDescription().isEmpty()
                 ? "私密剪輯，內容已隱藏" : "私密剪輯，" + entry.privateDescription());
+        content.setMinHeight(dp(48));
+        content.setGravity(Gravity.CENTER_VERTICAL);
+        content.setBackground(buttonBackground(Color.TRANSPARENT, 10));
+        content.setFocusable(true);
+        content.setOnClickListener(view -> preview(entry));
         content.setMaxLines(3);
         content.setEllipsize(TextUtils.TruncateAt.END);
         card.addView(content, margins(-1, -2, 10, 9));
@@ -471,15 +478,18 @@ public final class MainActivity extends Activity {
 
         LinearLayout actions = row();
         actions.addView(actionButton("複製", R.drawable.ic_copy, () -> copy(entry)));
-        actions.addView(actionButton("查看", entry.sensitive() ? R.drawable.ic_lock : R.drawable.ic_view,
-                () -> preview(entry)));
-        if (type.equals("連結")) {
-            actions.addView(actionButton("開啟", R.drawable.ic_link,
-                    () -> authorize(entry, "開啟私密網址", current -> openLink(current.content()))));
-        } else if (!entry.attachment()) {
-            actions.addView(actionButton("編輯", R.drawable.ic_edit,
-                    () -> authorize(entry, "編輯私密剪輯", this::showTextEditor)));
+        Button open = actionButton("開啟", R.drawable.ic_link,
+                () -> authorize(entry, "開啟私密網址", current -> openLink(current.url())));
+        open.setContentDescription("開啟連結");
+        if (entry.url().isEmpty()) {
+            open.setEnabled(false);
+            open.setTextColor(muted);
+            for (Drawable icon : open.getCompoundDrawablesRelative()) {
+                if (icon != null) icon.setTint(muted);
+            }
+            open.setAlpha(0.6f);
         }
+        actions.addView(open);
         actions.addView(organizationAction(entry, true));
         actions.addView(organizationAction(entry, false));
         actions.addView(actionButton("更多", R.drawable.ic_more, () -> entryOptions(entry)));
@@ -580,32 +590,69 @@ public final class MainActivity extends Activity {
 
     private void showTextEditor(Vault.Entry entry) {
         if (busy) return;
-        boolean link = entry != null && entry.type().equals("連結");
-        ContentEditor editor = new ContentEditor(this, link ? "輸入網址" : "輸入文字或 Markdown",
-                entry == null ? "" : entry.content(), Vault.MAX_TEXT, true);
-        if (!link) editor.enableMarkdown();
+        String original = entry == null ? "" : entry.content();
+        String originalUrl = entry == null ? "" : entry.url();
+        boolean originalMarkdown = entry == null || entry.format().markdown(original);
+        ContentEditor editor = new ContentEditor(this, "輸入內文", original, Vault.MAX_TEXT, true);
+        EditText url = edit("主要網址（選填）", Vault.MAX_LINK, false);
+        url.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        url.setText(originalUrl);
+        CheckBox markdown = checkbox("Markdown 格式", originalMarkdown);
+        LinearLayout fields = column();
+        fields.addView(url);
+        fields.addView(markdown);
+        editor.body.addView(fields);
         CheckBox mask = checkbox("標為私密", false);
         EditText description;
         if (entry == null) {
-            editor.body.addView(mask);
-            description = addPrivateDescription(editor.body, "", mask);
+            fields.addView(mask);
+            description = addPrivateDescription(fields, "", mask);
         } else {
             description = null;
         }
-        editor.show(entry == null ? "新增文字" : "編輯內容", true,
+        editor.enableReading(() -> {
+            String source = editor.input.getText().toString();
+            String link = url.getText().toString().trim();
+            return Article.clipMarkdown(source, Vault.isWebLink(link) ? link : "", selectedFormat(markdown));
+        }, entry != null);
+        editor.allowMarkup(originalMarkdown);
+        markdown.setOnCheckedChangeListener((button, checked) -> editor.allowMarkup(checked));
+        editor.show(entry == null ? "新增文字" : "剪輯內容", true,
                 () -> entry != null && entry.sensitive(),
-                () -> mask.isChecked() || (description != null && description.length() > 0), value -> {
-                    AlertDialog prompt = dialog;
-                    boolean sensitive = mask.isChecked();
-                    String display = description == null ? "" : description.getText().toString();
-                    mutate(() -> {
-                        if (entry == null) vault.addText(value, sensitive, display);
-                        else vault.updateText(entry.id(), value);
-                        return null;
-                    }, entry == null ? "已儲存" : "已更新內容", () -> {
-                        if (dialog == prompt) dismissDialog();
-                    });
+                () -> mask.isChecked() || (description != null && description.length() > 0)
+                        || !originalUrl.contentEquals(url.getText()) || markdown.isChecked() != originalMarkdown,
+                () -> !url.getText().toString().trim().isEmpty(), value -> {
+                    String primary = url.getText().toString().trim();
+                    String content = value.trim().isEmpty() ? "" : value;
+                    if (entry == null && primary.isEmpty() && Vault.isWebLink(content)) {
+                        primary = content.trim();
+                        content = "";
+                    }
+                    if (!primary.isEmpty() && !Vault.isWebLink(primary)) {
+                        url.setError("請輸入有效的 HTTP 或 HTTPS 網址");
+                        url.requestFocus();
+                        return;
+                    }
+                    saveEditedClip(entry, content, primary, selectedFormat(markdown), mask.isChecked(),
+                            description == null ? "" : description.getText().toString());
                 });
+    }
+
+    private static TextFormat selectedFormat(CheckBox markdown) {
+        return markdown.isChecked() ? TextFormat.MARKDOWN : TextFormat.PLAIN;
+    }
+
+    private void saveEditedClip(Vault.Entry entry, String content, String url, TextFormat format,
+                                boolean sensitive, String description) {
+        AlertDialog prompt = dialog;
+        mutate(() -> {
+            if (entry == null) vault.addText(content, url, format, sensitive, description);
+            else vault.updateText(entry.id(), content, url, format);
+            return null;
+        }, entry == null ? "已儲存" : "已更新內容", () -> {
+            if (dialog == prompt) dismissDialog();
+        });
     }
 
     private void pickFile() {
@@ -621,7 +668,7 @@ public final class MainActivity extends Activity {
     }
 
     private void consumeImport() {
-        if (locked || !resumed || busy || privateAction != null || privateDialog || editingDialog) return;
+        if (locked || !resumed || busy || privateAction != null || privateDialog || editingDialog || keepDialog) return;
         if (workspace.active()) {
             if (pendingShare != null) openClips();
             return;
@@ -751,7 +798,7 @@ public final class MainActivity extends Activity {
             ClipData clip = entry.attachment()
                     ? new ClipData("剪存附件", new String[]{entry.mime()},
                             new ClipData.Item(AttachmentProvider.uri(this, entry.id())))
-                    : ClipData.newPlainText("剪存", entry.content());
+                    : ClipData.newPlainText("剪存", entry.displayContent());
             PersistableBundle options = new PersistableBundle();
             options.putBoolean(SENSITIVE, true);
             clip.getDescription().setExtras(options);
@@ -768,7 +815,7 @@ public final class MainActivity extends Activity {
 
     private void openPreview(Vault.Entry entry) {
         if (!entry.attachment()) {
-            openTextPreview(entry);
+            showTextEditor(entry);
             return;
         }
         int visibleVersion = foregroundVersion;
@@ -793,45 +840,6 @@ public final class MainActivity extends Activity {
             ContentEditor.fullscreen(this, viewer);
             viewer.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> image.reset());
         }, null);
-    }
-
-    private void openTextPreview(Vault.Entry entry) {
-        LinearLayout body = dialogBody();
-        android.widget.FrameLayout content = new android.widget.FrameLayout(this);
-        ScrollView scroll = new ScrollView(this);
-        TextView original = text(entry.content(), 16, ink, false);
-        scroll.addView(original);
-        content.addView(scroll, new android.widget.FrameLayout.LayoutParams(-1, -1));
-        MarkdownPreview[] preview = new MarkdownPreview[1];
-        if (!entry.type().equals("連結")) {
-            Button toggle = button("Markdown 預覽", surfaceSoft, accent, () -> {});
-            toggle.setOnClickListener(view -> {
-                if (preview[0] == null) {
-                    preview[0] = new MarkdownPreview(this);
-                    content.addView(preview[0], new android.widget.FrameLayout.LayoutParams(-1, -1));
-                    preview[0].render(entry.content());
-                    scroll.setVisibility(View.GONE);
-                    toggle.setText("顯示原文");
-                } else {
-                    content.removeView(preview[0]);
-                    preview[0].destroy();
-                    preview[0] = null;
-                    scroll.setVisibility(View.VISIBLE);
-                    toggle.setText("Markdown 預覽");
-                }
-            });
-            body.addView(toggle);
-        }
-        body.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
-        AlertDialog viewer = show(new AlertDialog.Builder(this).setTitle(entry.type()).setView(ContentEditor.fillHeight(body))
-                .setNegativeButton("編輯", (ignored, which) -> showTextEditor(entry))
-                .setPositiveButton("關閉", null), entry.sensitive(), () -> {
-                    if (preview[0] != null) {
-                        content.removeView(preview[0]);
-                        preview[0].destroy();
-                    }
-                });
-        ContentEditor.fullscreen(this, viewer);
     }
 
     private Bitmap previewBitmap(Vault.Entry entry) throws Exception {
@@ -876,7 +884,6 @@ public final class MainActivity extends Activity {
         if (!type.equals("PDF")) options.add("加入拼報");
         boolean waiting = reading.contains(entry.id());
         if (type.equals("連結")) {
-            options.add("開啟網址");
             options.add(waiting ? "標為已讀" : "加入待讀");
         }
         int privacyOption = options.size();
@@ -893,8 +900,7 @@ public final class MainActivity extends Activity {
                         case 2 -> confirm("刪除剪輯", "這筆剪輯將從歷史清單移除。", "刪除",
                                 () -> mutate(() -> { vault.delete(entry.id()); return null; }, "已刪除"));
                         case 3 -> workspace.pickDraft(entry);
-                        case 4 -> authorize(entry, "開啟私密網址", current -> openLink(current.content()));
-                        case 5 -> mutate(() -> {
+                        case 4 -> mutate(() -> {
                             vault.setReading(entry.id(), !waiting);
                             return null;
                         }, waiting ? "已標為已讀，套用一般保留期限。" : "已加入待讀");
@@ -987,7 +993,7 @@ public final class MainActivity extends Activity {
             send.setClipData(new ClipData("剪存附件", new String[]{entry.mime()}, new ClipData.Item(uri)));
             send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } else {
-            send.putExtra(Intent.EXTRA_TEXT, entry.content());
+            send.putExtra(Intent.EXTRA_TEXT, entry.displayContent());
         }
         try {
             startActivity(Intent.createChooser(send, "分享剪輯"));
@@ -1260,8 +1266,10 @@ public final class MainActivity extends Activity {
                 dismissOverlay();
                 dialog = null;
                 privateDialog = false;
+                boolean wasKept = keepDialog;
                 editingDialog = false;
-                if (wasEditing) consumeImport();
+                keepDialog = false;
+                if (wasEditing || wasKept) consumeImport();
             }
         });
         shown.show();
@@ -1270,6 +1278,10 @@ public final class MainActivity extends Activity {
 
     AlertDialog show(AlertDialog.Builder builder, boolean sensitive) {
         return show(builder, sensitive, () -> {});
+    }
+
+    void keepPreviewWhileBackgrounded() {
+        keepDialog = true;
     }
 
     void keepEditorWhileBackgrounded() {
@@ -1296,6 +1308,7 @@ public final class MainActivity extends Activity {
         dialog = null;
         privateDialog = false;
         editingDialog = false;
+        keepDialog = false;
     }
 
     EditText edit(String hint, int limit, boolean multiline) {
@@ -1408,6 +1421,10 @@ public final class MainActivity extends Activity {
         view.setCompoundDrawablePadding(dp(2));
         view.setLayoutParams(new LinearLayout.LayoutParams(0, dp(52), 1));
         return view;
+    }
+
+    void styleModeButton(Button button, boolean selected) {
+        button.setBackground(buttonBackground(selected ? accent : surfaceSoft, 13));
     }
 
     private RippleDrawable buttonBackground(int color, int radius) {
