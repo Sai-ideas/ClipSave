@@ -217,6 +217,7 @@ public final class PinbaoRegression extends Instrumentation {
         Vault.Entry source = vault.addText("插入驗收 " + marker, false, "");
         MainActivity ui = null;
         try {
+            vault.updateOptions(source.id(), true, false, "", null);
             ArrayList<Draft.Block> blocks = new ArrayList<>();
             for (int index = 0; index < 10; index++) {
                 blocks.add(Draft.Block.text(Draft.Block.PARAGRAPH, "排序項目 " + index));
