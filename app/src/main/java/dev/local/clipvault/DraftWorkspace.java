@@ -323,14 +323,15 @@ final class DraftWorkspace {
     }
 
     private void renderDraft(Opened opened, Position position) {
-        renderDraft(opened.draft(), position, opened.images(), opened.sourceDifferences());
+        renderDraft(opened.draft(), position, opened.images(), opened.sourceDifferences(), false);
     }
 
     private void renderDraft(Draft draft) {
-        renderDraft(draft, null, null, null);
+        renderDraft(draft, null, null, null, false);
     }
 
-    private void renderDraft(Draft draft, Position position, Map<String, Bitmap> images, Set<String> differences) {
+    private void renderDraft(Draft draft, Position position, Map<String, Bitmap> images, Set<String> differences,
+                             boolean keepPreview) {
         boolean sameDraft = active && current != null && current.id().equals(draft.id()) && page != null;
         int offset = position != null ? position.scrollY()
                 : sameDraft ? ((ScrollView) page.getParent()).getScrollY() : 0;
@@ -351,7 +352,7 @@ final class DraftWorkspace {
         reloadShelf = false;
         current = draft;
         if (sameDraft) {
-            activity.dismissDialog();
+            if (!keepPreview) activity.dismissDialog();
             editorBar.removeAllViews();
             page.removeAllViews();
         } else {
@@ -961,8 +962,11 @@ final class DraftWorkspace {
     }
 
     private void preview(Draft draft) {
-        activity.runForeground(() -> articleImages(draft, cardImages), images -> {
-            MarkdownPreview preview = new MarkdownPreview(activity, activity::openLink);
+        activity.runForeground(() -> new ArticlePreview(Article.preview(draft), articleImages(draft, cardImages)),
+                article -> {
+            MarkdownPreview preview = new MarkdownPreview(activity, activity::openLink,
+                    (position, checked, complete) -> togglePreviewTask(draft.id(), article.text(),
+                            position, checked, complete));
             android.widget.FrameLayout content = ContentEditor.fillHeight(preview);
             content.setPadding(activity.dp(18), 0, activity.dp(18), 0);
             AlertDialog dialog = activity.show(new AlertDialog.Builder(activity).setTitle("文章預覽")
@@ -972,8 +976,30 @@ final class DraftWorkspace {
                     });
             ContentEditor.fullscreen(activity, dialog);
             if (!draft.sensitive()) activity.keepPreviewWhileBackgrounded();
-            preview.render(() -> Article.render(draft), images);
+            preview.render(article.text().source(), article.images(), article.text()::canToggle);
         });
+    }
+
+    private record ArticlePreview(Article.Preview text, Map<String, byte[]> images) {}
+
+    private void togglePreviewTask(String draftId, Article.Preview article, int position, boolean checked,
+                                   Consumer<Boolean> complete) {
+        Draft draft = current;
+        if (!activity.canAct() || draft == null || !draft.id().equals(draftId)) {
+            complete.accept(false);
+            return;
+        }
+        Draft changed = article.toggle(draft, position, checked);
+        if (changed == draft) {
+            complete.accept(true);
+            return;
+        }
+        activity.run(() -> editorData(vault.updateDraft(draft, changed), null), saved -> {
+            if (current == draft) {
+                renderDraft(saved.draft(), null, saved.images(), saved.sourceDifferences(), true);
+            }
+            complete.accept(true);
+        }, () -> complete.accept(false));
     }
 
     private Map<String, byte[]> articleImages(Draft draft, Map<String, Bitmap> cached) throws Exception {

@@ -513,6 +513,8 @@ public final class PinbaoRegression extends Instrumentation {
         String original = "# " + marker + "\n\n> **粗體**\n\n- [x] 完成\n\n<script>文字</script>"
                 + "\n\n" + mixedLists
                 + "\n\n- [x] 母項  \n  續行\n  - [ ] 子項";
+        int secondTask = original.lastIndexOf("[ ] 待辦事項");
+        String checkedClip = original.substring(0, secondTask + 1) + "x" + original.substring(secondTask + 2);
         String rendered = MarkdownPreview.renderMarkup(original);
         check(rendered.contains("<h1>") && rendered.contains("<blockquote>")
                 && rendered.contains("<strong>粗體</strong>") && rendered.contains("type=\"checkbox\"")
@@ -579,7 +581,14 @@ public final class PinbaoRegression extends Instrumentation {
             inspectClipPreview(clip, "粗體");
             check(onMain(() -> hasOnlyPreviewSave(dialog(screen))), "clean preview has only Save");
             check(onMain(() -> isEditorModeButton(screen, "編輯")), "preview has a distinct edit icon");
+            String duplicate = taskCheckbox("待辦事項", 1);
+            togglePreviewCheckbox(clip, duplicate, true);
+            check(previewHas(clip, "!(" + taskCheckbox("待辦事項", 0) + ").checked"),
+                    "first duplicate remains unchecked");
+            check(vault.entry(entry.id()).content().equals(original), "clip changes wait for the editor save");
             onMain(() -> described(dialogRoot(screen), "編輯").performClick());
+            check(onMain(() -> checkedClip.contentEquals(editInput(screen).getText())),
+                    "only the second task marker changed in the editor");
             check(onMain(() -> isEditorModeButton(screen, "預覽")), "editor has a distinct preview icon");
             check(onMain(() -> find(dialogRoot(screen), v -> v instanceof EditText) == editInput(screen)
                     && named(dialogRoot(screen), "Markdown 格式") == null
@@ -603,7 +612,7 @@ public final class PinbaoRegression extends Instrumentation {
             });
             sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
             await(() -> onMain(() -> screen.canAct() && dialog(screen) == null), "editor saved");
-            String edited = original + "\n\n新增段落";
+            String edited = checkedClip + "\n\n新增段落";
             onMain(() -> action(screen, "新增文字").performClick());
             runOnMainSync(() -> {
                 View editorRoot = dialogRoot(screen);
@@ -680,7 +689,10 @@ public final class PinbaoRegression extends Instrumentation {
             check(onMain(() -> action(screen, "新增文字") != null && action(screen, "預覽全文") == null),
                     "adding to Pinbao leaves clip list active");
             check(vault.draft(draft.id()).blocks().size() == 1, "clip added from its toolbar");
-            Draft inserted = vault.addDraftClips(draft.id(), List.of(image.id(), legacy.id()), false);
+            Draft withClips = vault.addDraftClips(draft.id(), List.of(image.id(), legacy.id()), false);
+            ArrayList<Draft.Block> blocks = new ArrayList<>(withClips.blocks());
+            blocks.add(Draft.Block.text(Draft.Block.Kind.CHECKLIST.mime, "- [ ] 拼報獨立待辦"));
+            Draft inserted = vault.updateDraft(withClips, withClips.withContent(withClips.title(), blocks));
             check(inserted.blocks().get(0).content().equals(edited)
                     && inserted.blocks().get(2).content().equals(legacy.url()), "Pinbao copies only actual content");
             JSONObject priorBlock = inserted.blocks().get(0).toJson().put("url", url);
@@ -717,11 +729,37 @@ public final class PinbaoRegression extends Instrumentation {
                     && find(dialogRoot(screen), v -> v instanceof MarkdownPreview) != null), "Pinbao Markdown preview");
             MarkdownPreview web = onMain(() -> (MarkdownPreview) find(dialogRoot(screen), v -> v instanceof MarkdownPreview));
             inspectPreview(web, legacy.url());
+            togglePreviewCheckbox(web, duplicate, false);
+            togglePreviewCheckbox(web, taskCheckbox("子項", 0), true);
+            togglePreviewCheckbox(web, taskCheckbox("拼報獨立待辦", 0), true);
+            String revisedBlock = original.replace("- [ ] 子項", "- [x] 子項") + "\n\n新增段落";
+            Draft stored = vault.draft(draft.id());
+            check(stored.blocks().get(0).content().equals(revisedBlock)
+                    && stored.blocks().get(3).content().equals("- [x] 拼報獨立待辦")
+                    && vault.entry(entry.id()).content().equals(edited), "Pinbao toggles only its own content");
+            String checkedArticle = Article.exportMarkdown(stored);
+            check(checkedArticle.contains(revisedBlock) && checkedArticle.contains("- [x] 拼報獨立待辦"),
+                    "Markdown output includes saved task states");
+            java.io.ByteArrayOutputStream exported = new java.io.ByteArrayOutputStream();
+            Article.writeZip(vault, stored, exported);
+            try (var zip = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(exported.toByteArray()))) {
+                check(zip.getNextEntry().getName().equals("article.md")
+                                && new String(zip.readAllBytes(), StandardCharsets.UTF_8).equals(checkedArticle),
+                        "ZIP includes the saved task states");
+            }
+            onMain(() -> dialog(screen).getButton(AlertDialog.BUTTON_POSITIVE).performClick());
+            onMain(() -> action(screen, "預覽全文").performClick());
+            await(() -> onMain(() -> dialog(screen) != null
+                    && find(dialogRoot(screen), v -> v instanceof MarkdownPreview) != null), "reopen Pinbao preview");
+            MarkdownPreview reopened = onMain(() ->
+                    (MarkdownPreview) find(dialogRoot(screen), v -> v instanceof MarkdownPreview));
+            await(() -> previewHas(reopened, "(" + taskCheckbox("拼報獨立待辦", 0) + ").checked"),
+                    "reopened Pinbao retains checked tasks");
             onMain(() -> dialog(screen).getButton(AlertDialog.BUTTON_POSITIVE).performClick());
             onMain(() -> action(screen, "複製全文").performClick());
             await(() -> onMain(() -> {
                 var clipData = screen.getSystemService(android.content.ClipboardManager.class).getPrimaryClip();
-                return screen.canAct() && clipData != null && markdown.contentEquals(clipData.getItemAt(0).getText())
+                return screen.canAct() && clipData != null && checkedArticle.contentEquals(clipData.getItemAt(0).getText())
                         && !isSensitiveClipboard(clipData);
             }), "public Pinbao copy keeps body links and public clipboard status");
             onMain(() -> action(screen, "剪輯").performClick());
@@ -739,17 +777,11 @@ public final class PinbaoRegression extends Instrumentation {
         }
     }
 
-    @android.annotation.SuppressLint("SetJavaScriptEnabled")
     private void inspectClipPreview(MarkdownPreview web, String expected) {
-        try {
-            runOnMainSync(() -> web.getSettings().setJavaScriptEnabled(true));
-            await(() -> previewHas(web,
-                    "(document.querySelector('blockquote strong') || {}).textContent === '" + expected + "'"
-                            + " && " + mixedListsAreAligned()),
-                    "clip preview renders formatted text and aligns the mixed lists");
-        } finally {
-            runOnMainSync(() -> web.getSettings().setJavaScriptEnabled(false));
-        }
+        await(() -> previewHas(web,
+                "(document.querySelector('blockquote strong') || {}).textContent === '" + expected + "'"
+                        + " && " + mixedListsAreAligned()),
+                "clip preview renders formatted text and aligns the mixed lists");
     }
 
     private static String mixedListsAreAligned() {
@@ -815,56 +847,69 @@ public final class PinbaoRegression extends Instrumentation {
         return "true".equals(result.get());
     }
 
-    @android.annotation.SuppressLint("SetJavaScriptEnabled")
+    private static String taskCheckbox(String label, int index) {
+        return "Array.from(document.querySelectorAll('li.vault-task'))"
+                + ".filter(item => item.textContent.trim() === '" + label + "')[" + index
+                + "].querySelector('input')";
+    }
+
+    private void togglePreviewCheckbox(MarkdownPreview web, String selector, boolean checked) throws Exception {
+        await(() -> previewHas(web, "(" + selector + ").hasAttribute('data-task')"), "task is interactive");
+        Point box = webPoint(web, selector);
+        long onset = SystemClock.uptimeMillis();
+        dragEvent(onset, MotionEvent.ACTION_DOWN, box);
+        dragEvent(onset, MotionEvent.ACTION_UP, box);
+        await(() -> previewHas(web, "pending === null && (" + selector + ").checked === " + checked),
+                "task click changes and acknowledges the check state");
+    }
+
+    private Point webPoint(MarkdownPreview web, String element) throws Exception {
+        java.util.concurrent.atomic.AtomicBoolean painted = new java.util.concurrent.atomic.AtomicBoolean();
+        runOnMainSync(() -> web.evaluateJavascript("(" + element + ").scrollIntoView({block:'center'})",
+                ignored -> web.postVisualStateCallback(1L, new android.webkit.WebView.VisualStateCallback() {
+                    @Override public void onComplete(long requestId) { painted.set(true); }
+                })));
+        await(painted::get, "preview scroll painted");
+        AtomicReference<String> coordinates = new AtomicReference<>();
+        runOnMainSync(() -> web.evaluateJavascript(
+                "(function(){var r=(" + element + ").getClientRects()[0];"
+                        + "return [(r.left+r.right)/2,(r.top+r.bottom)/2]})()", coordinates::set));
+        await(() -> coordinates.get() != null, "element coordinates");
+        JSONArray rect = new JSONArray(coordinates.get());
+        int[] location = onMain(() -> {
+            int[] xy = new int[2];
+            web.getLocationOnScreen(xy);
+            return xy;
+        });
+        float density = web.getResources().getDisplayMetrics().density;
+        return new Point(location[0] + density * (float) rect.getDouble(0),
+                location[1] + density * (float) rect.getDouble(1));
+    }
+
     private void inspectPreview(MarkdownPreview web, String expectedUrl) throws Exception {
-        try {
-            runOnMainSync(() -> web.getSettings().setJavaScriptEnabled(true));
-            await(() -> previewHas(web,
-                    "Array.from(document.images).some(i => i.naturalWidth > 0 && i.src.startsWith('data:image/webp;'))"
-                            + " && document.querySelector('blockquote')"
-                            + " && Array.from(document.links).some(a => a.href === '" + expectedUrl + "')"
-                            + " && " + mixedListsAreAligned()),
-                    "preview shows local picture, formatted quote, and updated clickable link");
-            String linkElement = "Array.from(document.links).find(a=>a.href==='" + expectedUrl + "')";
-            java.util.concurrent.atomic.AtomicBoolean painted = new java.util.concurrent.atomic.AtomicBoolean();
-            runOnMainSync(() -> web.evaluateJavascript(linkElement + ".scrollIntoView({block:'center'})",
-                    ignored -> web.postVisualStateCallback(1L, new android.webkit.WebView.VisualStateCallback() {
-                        @Override public void onComplete(long requestId) { painted.set(true); }
-                    })));
-            await(painted::get, "link scroll painted");
-            AtomicReference<String> coordinates = new AtomicReference<>();
-            runOnMainSync(() -> web.evaluateJavascript(
-                    "(function(){var r=" + linkElement + ".getClientRects()[0];"
-                            + "return [(r.left+r.right)/2,(r.top+r.bottom)/2]})()", coordinates::set));
-            await(() -> coordinates.get() != null, "link coordinates");
-            JSONArray rect = new JSONArray(coordinates.get());
-            int[] location = onMain(() -> {
-                int[] xy = new int[2];
-                web.getLocationOnScreen(xy);
-                return xy;
-            });
-            float density = web.getResources().getDisplayMetrics().density;
-            Point link = new Point(location[0] + density * (float) rect.getDouble(0),
-                    location[1] + density * (float) rect.getDouble(1));
-            AtomicReference<String> launched = new AtomicReference<>();
-            ActivityMonitor browser = new ActivityMonitor() {
-                @Override public ActivityResult onStartActivity(Intent intent) {
-                    if (!Intent.ACTION_VIEW.equals(intent.getAction())) return null;
-                    launched.set(intent.getDataString());
-                    return new ActivityResult(Activity.RESULT_OK, null);
-                }
-            };
-            addMonitor(browser);
-            try {
-                long onset = SystemClock.uptimeMillis();
-                dragEvent(onset, MotionEvent.ACTION_DOWN, link);
-                dragEvent(onset, MotionEvent.ACTION_UP, link);
-                await(() -> expectedUrl.equals(launched.get()), "click hands URL to Android");
-            } finally {
-                removeMonitor(browser);
+        await(() -> previewHas(web,
+                "Array.from(document.images).some(i => i.naturalWidth > 0 && i.src.startsWith('data:image/webp;'))"
+                        + " && document.querySelector('blockquote')"
+                        + " && Array.from(document.links).some(a => a.href === '" + expectedUrl + "')"
+                        + " && " + mixedListsAreAligned()),
+                "preview shows local picture, formatted quote, and updated clickable link");
+        Point link = webPoint(web, "Array.from(document.links).find(a=>a.href==='" + expectedUrl + "')");
+        AtomicReference<String> launched = new AtomicReference<>();
+        ActivityMonitor browser = new ActivityMonitor() {
+            @Override public ActivityResult onStartActivity(Intent intent) {
+                if (!Intent.ACTION_VIEW.equals(intent.getAction())) return null;
+                launched.set(intent.getDataString());
+                return new ActivityResult(Activity.RESULT_OK, null);
             }
+        };
+        addMonitor(browser);
+        try {
+            long onset = SystemClock.uptimeMillis();
+            dragEvent(onset, MotionEvent.ACTION_DOWN, link);
+            dragEvent(onset, MotionEvent.ACTION_UP, link);
+            await(() -> expectedUrl.equals(launched.get()), "click hands URL to Android");
         } finally {
-            runOnMainSync(() -> web.getSettings().setJavaScriptEnabled(false));
+            removeMonitor(browser);
         }
     }
 

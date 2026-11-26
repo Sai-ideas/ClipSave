@@ -19,6 +19,7 @@ import android.widget.PopupMenu;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.Collections;
 
 final class ContentEditor {
     final LinearLayout body;
@@ -139,9 +140,22 @@ final class ContentEditor {
         if (!activity.canAct()) return;
         if (reading && preview == null) {
             activity.getSystemService(InputMethodManager.class).hideSoftInputFromWindow(input.getWindowToken(), 0);
-            preview = new MarkdownPreview(activity, activity::openLink);
+            String source = readingSource.get();
+            boolean editable = source.contentEquals(input.getText());
+            preview = new MarkdownPreview(activity, activity::openLink, (position, checked, complete) -> {
+                if (!activity.canAct() || !dialog.isShowing()) {
+                    complete.accept(false);
+                    return;
+                }
+                String raw = input.getText().toString();
+                String changed = MarkdownPreview.updateTask(raw, position, checked);
+                if (!raw.equals(changed)) {
+                    input.getText().replace(position + 1, position + 2, changed.substring(position + 1, position + 2));
+                }
+                complete.accept(true);
+            });
             content.addView(preview, new FrameLayout.LayoutParams(-1, -1));
-            preview.render(readingSource.get());
+            preview.render(source, Collections.emptyMap(), position -> editable);
         } else if (!reading) {
             closePreview();
         }

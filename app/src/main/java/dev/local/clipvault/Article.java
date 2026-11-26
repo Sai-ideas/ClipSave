@@ -21,7 +21,9 @@ import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.function.Consumer;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -34,7 +36,46 @@ final class Article {
 
     private Article() {}
 
+    private record BlockRange(int index, int start, int end) {
+        boolean contains(int position) { return position >= start && position < end; }
+    }
+
+    record Preview(String source, List<BlockRange> tasks) {
+        boolean canToggle(int position) {
+            return rangeAt(position) != null;
+        }
+
+        Draft toggle(Draft draft, int position, boolean checked) {
+            BlockRange range = rangeAt(position);
+            if (range == null) return draft;
+            Draft.Block block = draft.blocks().get(range.index());
+            String content = block.kind() == Draft.Block.Kind.CHECKLIST
+                    ? formatText(block, true) : block.content();
+            String changed = MarkdownPreview.updateTask(content, position - range.start(), checked);
+            if (content.equals(changed)) return draft;
+            ArrayList<Draft.Block> blocks = new ArrayList<>(draft.blocks());
+            blocks.set(range.index(), block.withContent(changed));
+            return draft.withContent(draft.title(), blocks);
+        }
+
+        private BlockRange rangeAt(int position) {
+            for (BlockRange range : tasks) {
+                if (range.contains(position)) return range;
+            }
+            return null;
+        }
+    }
+
+    static Preview preview(Draft draft) {
+        ArrayList<BlockRange> ranges = new ArrayList<>();
+        return new Preview(render(draft, ranges::add), ranges);
+    }
+
     static String render(Draft draft) {
+        return render(draft, null);
+    }
+
+    private static String render(Draft draft, Consumer<BlockRange> taskRange) {
         StringBuilder result = new StringBuilder("# ").append(escapeLiteral(draft.title()));
         HashMap<String, String> names = imageNames(draft);
         for (int index = 0; index < draft.blocks().size(); index++) {
@@ -43,7 +84,12 @@ final class Article {
             if (block.image()) {
                 result.append("![圖片](").append(names.get(block.sourceId())).append(')');
             } else {
+                int start = result.length();
                 result.append(formatText(block, true));
+                if (taskRange != null && (block.kind() == Draft.Block.Kind.CHECKLIST
+                        || (block.kind() == Draft.Block.Kind.TEXT && block.format().markdown(block.content())))) {
+                    taskRange.accept(new BlockRange(index, start, result.length()));
+                }
             }
         }
         return result.append('\n').toString();
