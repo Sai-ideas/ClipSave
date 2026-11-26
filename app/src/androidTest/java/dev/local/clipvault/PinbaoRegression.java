@@ -743,8 +743,11 @@ public final class PinbaoRegression extends Instrumentation {
             java.io.ByteArrayOutputStream exported = new java.io.ByteArrayOutputStream();
             Article.writeZip(vault, stored, exported);
             try (var zip = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(exported.toByteArray()))) {
-                check(zip.getNextEntry().getName().equals("article.md")
-                                && new String(zip.readAllBytes(), StandardCharsets.UTF_8).equals(checkedArticle),
+                check(zip.getNextEntry().getName().equals("article.md"), "article Markdown is first in ZIP");
+                java.io.ByteArrayOutputStream markdownFile = new java.io.ByteArrayOutputStream();
+                byte[] buffer = new byte[4096];
+                for (int count; (count = zip.read(buffer)) != -1;) markdownFile.write(buffer, 0, count);
+                check(new String(markdownFile.toByteArray(), StandardCharsets.UTF_8).equals(checkedArticle),
                         "ZIP includes the saved task states");
             }
             onMain(() -> dialog(screen).getButton(AlertDialog.BUTTON_POSITIVE).performClick());
