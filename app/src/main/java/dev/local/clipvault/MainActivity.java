@@ -515,7 +515,7 @@ public final class MainActivity extends Activity {
         actions.addView(open);
         actions.addView(pinAction(entry));
         if (entry.canEditUrl()) {
-            Button add = actionButton("拼報", R.drawable.ic_add_pinbao, () -> workspace.pickDraft(entry));
+            Button add = actionButton("加入", R.drawable.ic_add_pinbao, () -> workspace.pickDraft(entry));
             add.setContentDescription("加入拼報");
             actions.addView(add);
         }
