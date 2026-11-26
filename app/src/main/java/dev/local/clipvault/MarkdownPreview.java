@@ -10,8 +10,13 @@ import android.webkit.WebViewClient;
 
 import org.commonmark.Extension;
 import org.commonmark.ext.autolink.AutolinkExtension;
+import org.commonmark.ext.task.list.items.TaskListItemMarker;
 import org.commonmark.ext.task.list.items.TaskListItemsExtension;
+import org.commonmark.node.AbstractVisitor;
 import org.commonmark.node.Image;
+import org.commonmark.node.ListItem;
+import org.commonmark.node.Node;
+import org.commonmark.node.Paragraph;
 import org.commonmark.parser.Parser;
 import org.commonmark.renderer.html.HtmlRenderer;
 
@@ -31,6 +36,7 @@ final class MarkdownPreview extends WebView {
     private static final List<Extension> EXTENSIONS =
             Arrays.asList(TaskListItemsExtension.create(), AutolinkExtension.create());
     private static final Parser PARSER = Parser.builder().extensions(EXTENSIONS).build();
+    private static final String TASK_CLASS = "vault-task";
     private static final HtmlRenderer RENDERER = renderer(Collections.emptyMap());
     private static final ExecutorService RENDERING = Executors.newSingleThreadExecutor();
 
@@ -74,6 +80,7 @@ final class MarkdownPreview extends WebView {
                 + "pre{overflow:auto}blockquote{border-inline-start:3px solid " + accent + "}"
                 + "a{color:" + accent + "}code{font-family:monospace}img{max-width:100%;height:auto}"
                 + "hr{border:0;border-top:1px solid " + accent + "}"
+                + "li." + TASK_CLASS + "{list-style:none}"
                 + "</style></head><body>";
         int version = ++renderVersion;
         if (pendingRender != null) pendingRender.cancel(true);
@@ -82,7 +89,7 @@ final class MarkdownPreview extends WebView {
             try {
                 String markdown = source.get();
                 HtmlRenderer htmlRenderer = localImages.isEmpty() ? RENDERER : renderer(localImages);
-                markup = htmlRenderer.render(PARSER.parse(markdown));
+                markup = htmlRenderer.render(parseForPreview(markdown));
             } catch (RuntimeException | StackOverflowError error) {
                 markup = "<p>無法預覽這段 Markdown。可以返回查看原文。</p>";
             }
@@ -102,13 +109,37 @@ final class MarkdownPreview extends WebView {
     }
 
     static String renderMarkup(String source) {
-        return RENDERER.render(PARSER.parse(source));
+        return RENDERER.render(parseForPreview(source));
+    }
+
+    private static Node parseForPreview(String source) {
+        Node document = PARSER.parse(source);
+        document.accept(new AbstractVisitor() {
+            @Override public void visit(ListItem item) {
+                Node marker = item.getFirstChild();
+                if (marker instanceof TaskListItemMarker && marker.getNext() instanceof Paragraph paragraph) {
+                    // Loose lists render a paragraph block. Its checkbox belongs on the first text line.
+                    paragraph.prependChild(marker);
+                }
+                visitChildren(item);
+            }
+        });
+        return document;
+    }
+
+    private static boolean hasTaskMarker(ListItem item) {
+        Node first = item.getFirstChild();
+        return first instanceof TaskListItemMarker
+                || (first instanceof Paragraph && first.getFirstChild() instanceof TaskListItemMarker);
     }
 
     private static HtmlRenderer renderer(Map<String, byte[]> images) {
         Map<String, String> encoded = new HashMap<>();
         return HtmlRenderer.builder().extensions(EXTENSIONS).escapeHtml(true).sanitizeUrls(true)
                 .attributeProviderFactory(context -> (node, tag, attributes) -> {
+                    if (node instanceof ListItem item && tag.equals("li") && hasTaskMarker(item)) {
+                        attributes.merge("class", TASK_CLASS, (existing, task) -> existing + " " + task);
+                    }
                     if (!(node instanceof Image image) || !tag.equals("img")) return;
                     String destination = image.getDestination();
                     byte[] local = images.get(destination);

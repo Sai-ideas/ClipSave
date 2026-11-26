@@ -153,8 +153,8 @@ final class ContentEditor {
         mode.setImageResource(reading ? R.drawable.ic_edit : R.drawable.ic_view);
         mode.setContentDescription(reading ? "編輯" : "預覽");
         mode.setTooltipText(reading ? "編輯" : "預覽");
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setText(reading && !dirty() ? "關閉" : "存檔");
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setVisibility(reading && !dirty() ? View.GONE : View.VISIBLE);
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setText("存檔");
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setVisibility(reading ? View.GONE : View.VISIBLE);
     }
 
     private boolean dirty() {
@@ -228,7 +228,7 @@ final class ContentEditor {
 
         Runnable cancel = () -> {
             if (!activity.canAct()) return;
-            if (markdown || !dirty()) {
+            if (!dirty()) {
                 dialog.dismiss();
             } else {
                 activity.getSystemService(InputMethodManager.class)

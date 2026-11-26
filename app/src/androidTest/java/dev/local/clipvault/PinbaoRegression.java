@@ -478,7 +478,18 @@ public final class PinbaoRegression extends Instrumentation {
     }
 
     private void contentEditing(Vault vault, String marker) throws Exception {
-        String original = "# " + marker + "\n\n> **粗體**\n\n- [x] 完成\n\n<script>文字</script>";
+        String mixedLists = """
+                - [ ] 麥穗
+                - [ ] 嗎四
+
+                - 版面會壞掉
+                - 444
+
+                1. 項目
+                2. 試試
+                """.trim();
+        String original = "# " + marker + "\n\n> **粗體**\n\n- [x] 完成\n\n<script>文字</script>"
+                + "\n\n" + mixedLists;
         String rendered = MarkdownPreview.renderMarkup(original);
         check(rendered.contains("<h1>") && rendered.contains("<blockquote>")
                 && rendered.contains("<strong>粗體</strong>") && rendered.contains("type=\"checkbox\"")
@@ -543,6 +554,7 @@ public final class PinbaoRegression extends Instrumentation {
             MarkdownPreview clip = onMain(() ->
                     (MarkdownPreview) find(dialogRoot(screen), v -> v instanceof MarkdownPreview));
             inspectClipPreview(clip, "粗體");
+            check(onMain(() -> hasOnlyPreviewSave(dialog(screen))), "clean preview has only Save");
             onMain(() -> described(dialogRoot(screen), "編輯").performClick());
             check(onMain(() -> find(dialogRoot(screen), v -> v instanceof EditText) == editInput(screen)
                     && named(dialogRoot(screen), "Markdown 格式") == null
@@ -553,11 +565,14 @@ public final class PinbaoRegression extends Instrumentation {
                     "reader to full-height editor");
             runOnMainSync(() -> {
                 editInput(screen).append("\n\n新增段落");
+                dialog(screen).getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+                check(dialogField(screen, "overlay") != null, "dirty cancel asks before discarding");
+                dialogField(screen, "overlay").getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+                check(editInput(screen).getText().toString().endsWith("新增段落"), "continue keeps the edit");
                 AlertDialog session = dialog(screen);
                 described(dialogRoot(screen), "預覽").performClick();
-                check(dialog(screen) == session
-                        && "存檔".contentEquals(session.getButton(AlertDialog.BUTTON_POSITIVE).getText()),
-                        "reading with edits offers save in the same session");
+                check(dialog(screen) == session && hasOnlyPreviewSave(session),
+                        "preview with edits also has only Save");
                 described(dialogRoot(screen), "編輯").performClick();
                 check(editInput(screen).getText().toString().endsWith("新增段落"), "tab retains input");
             });
@@ -580,6 +595,8 @@ public final class PinbaoRegression extends Instrumentation {
                 field.append("\n");
                 check(field.getText().toString().endsWith("\n- [ ] "), "task continuation resets the check");
                 dialog(screen).getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+                check(dialogField(screen, "overlay") != null, "new text also asks before discarding");
+                dialogField(screen, "overlay").getButton(AlertDialog.BUTTON_POSITIVE).performClick();
             });
             check(vault.list().stream().noneMatch(item -> item.content().equals("- [x] 完成\n- [ ] ")),
                     "cancel does not create a new card");
@@ -702,11 +719,39 @@ public final class PinbaoRegression extends Instrumentation {
         try {
             runOnMainSync(() -> web.getSettings().setJavaScriptEnabled(true));
             await(() -> previewHas(web,
-                    "(document.querySelector('blockquote strong') || {}).textContent === '" + expected + "'"),
-                    "clip preview renders formatted text");
+                    "(document.querySelector('blockquote strong') || {}).textContent === '" + expected + "'"
+                            + " && " + mixedListsAreAligned()),
+                    "clip preview renders formatted text and aligns the mixed lists");
         } finally {
             runOnMainSync(() -> web.getSettings().setJavaScriptEnabled(false));
         }
+    }
+
+    private static String mixedListsAreAligned() {
+        return """
+                (function () {
+                    var task = Array.from(document.querySelectorAll('li.vault-task'))
+                        .find(i => i.textContent.trim() === '麥穗');
+                    var paragraph = task && task.querySelector('p');
+                    var box = paragraph && paragraph.querySelector('input[type=checkbox]');
+                    if (!box) return false;
+                    var range = document.createRange();
+                    range.selectNodeContents(paragraph.lastChild);
+                    var text = range.getBoundingClientRect();
+                    var check = box.getBoundingClientRect();
+                    var plain = task.nextElementSibling && task.nextElementSibling.nextElementSibling;
+                    var ordered = Array.from(document.querySelectorAll('ol')).find(
+                        i => Array.from(i.children).map(c => c.textContent.trim()).join('|') === '項目|試試');
+                    return Math.max(text.top, check.top) < Math.min(text.bottom, check.bottom)
+                        && getComputedStyle(task).listStyleType === 'none'
+                        && plain && getComputedStyle(plain).listStyleType === 'disc' && !!ordered;
+                })()
+                """;
+    }
+
+    private static boolean hasOnlyPreviewSave(AlertDialog dialog) {
+        return "存檔".contentEquals(dialog.getButton(AlertDialog.BUTTON_POSITIVE).getText())
+                && dialog.getButton(AlertDialog.BUTTON_NEGATIVE).getVisibility() == View.GONE;
     }
 
     private boolean previewHas(MarkdownPreview web, String condition) {
@@ -724,7 +769,8 @@ public final class PinbaoRegression extends Instrumentation {
             await(() -> previewHas(web,
                     "Array.from(document.images).some(i => i.naturalWidth > 0 && i.src.startsWith('data:image/webp;'))"
                             + " && document.querySelector('blockquote')"
-                            + " && Array.from(document.links).some(a => a.href === '" + expectedUrl + "')"),
+                            + " && Array.from(document.links).some(a => a.href === '" + expectedUrl + "')"
+                            + " && " + mixedListsAreAligned()),
                     "preview shows local picture, formatted quote, and updated clickable link");
             String linkElement = "Array.from(document.links).find(a=>a.href==='" + expectedUrl + "')";
             java.util.concurrent.atomic.AtomicBoolean painted = new java.util.concurrent.atomic.AtomicBoolean();
@@ -879,8 +925,12 @@ public final class PinbaoRegression extends Instrumentation {
     }
 
     private static AlertDialog dialog(MainActivity activity) {
+        return dialogField(activity, "dialog");
+    }
+
+    private static AlertDialog dialogField(MainActivity activity, String name) {
         try {
-            java.lang.reflect.Field field = MainActivity.class.getDeclaredField("dialog");
+            java.lang.reflect.Field field = MainActivity.class.getDeclaredField(name);
             field.setAccessible(true);
             return (AlertDialog) field.get(activity);
         } catch (ReflectiveOperationException failure) {
