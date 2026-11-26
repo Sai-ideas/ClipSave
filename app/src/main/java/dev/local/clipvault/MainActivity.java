@@ -1445,6 +1445,13 @@ public final class MainActivity extends Activity {
         return button;
     }
 
+    ImageButton filledIconButton(int resource, String label, Runnable action) {
+        ImageButton button = iconButton(resource, label, action);
+        button.setImageTintList(ColorStateList.valueOf(onAccent));
+        button.setBackground(new android.graphics.drawable.InsetDrawable(buttonBackground(accent, 14), dp(4)));
+        return button;
+    }
+
     private RippleDrawable buttonBackground(int color, int radius) {
         return new RippleDrawable(ColorStateList.valueOf(color == accent ? 0x36000000 : ripple),
                 shape(color, radius), color == Color.TRANSPARENT ? shape(Color.WHITE, radius) : null);

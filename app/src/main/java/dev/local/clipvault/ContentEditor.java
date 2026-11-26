@@ -76,7 +76,8 @@ final class ContentEditor {
         markupStrip.addView(tools);
         toolbar.addView(markupStrip, new LinearLayout.LayoutParams(0, activity.dp(48), 1));
 
-        mode = activity.iconButton(R.drawable.ic_view, "預覽", () -> selectReading(preview == null));
+        mode = activity.filledIconButton(R.drawable.ic_view, "預覽", () -> selectReading(preview == null));
+        ((LinearLayout.LayoutParams) mode.getLayoutParams()).setMarginStart(activity.dp(4));
         toolbar.addView(mode);
         body.addView(toolbar, 0);
 

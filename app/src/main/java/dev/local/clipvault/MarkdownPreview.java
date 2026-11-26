@@ -80,7 +80,12 @@ final class MarkdownPreview extends WebView {
                 + "pre{overflow:auto}blockquote{border-inline-start:3px solid " + accent + "}"
                 + "a{color:" + accent + "}code{font-family:monospace}img{max-width:100%;height:auto}"
                 + "hr{border:0;border-top:1px solid " + accent + "}"
-                + "li." + TASK_CLASS + "{list-style:none}"
+                + "ul,ol{margin:.65em 0}ul{padding-inline-start:1.65em}ol{padding-inline-start:2.25em}"
+                + "li+li{margin-top:.2em}li>p{margin:.65em 0}"
+                + "li>p:first-child{margin-top:0}li>p:last-child{margin-bottom:0}"
+                + "li." + TASK_CLASS + "{position:relative;list-style:none}"
+                + "li." + TASK_CLASS + ">input,li." + TASK_CLASS + ">p:first-child>input{"
+                + "position:absolute;left:-1.25em;top:.35em;font:inherit;width:.9em;height:.9em;margin:0}"
                 + "</style></head><body>";
         int version = ++renderVersion;
         if (pendingRender != null) pendingRender.cancel(true);

@@ -479,17 +479,40 @@ public final class PinbaoRegression extends Instrumentation {
 
     private void contentEditing(Vault vault, String marker) throws Exception {
         String mixedLists = """
-                - [ ] 麥穗
-                - [ ] 嗎四
+                # 標題一級
 
-                - 版面會壞掉
-                - 444
+                - [ ] 待辦事項
+                - [ ] 問
+                - [ ] 開
+
+                - 項目
+                - 消滅
+                - 影音
+
+                ---
+                - [ ] 待辦事項
+                - [ ] 麥爾
+                - [ ] 麥穗
+                - [ ] 嗎四\s\s
+
+                ===
+
+                版面會壞掉\s\s
+                444\s\s
+
+
+                ---
+
+
 
                 1. 項目
-                2. 試試
+                2. 試試\s\s
+
+                中文字幕
                 """.trim();
         String original = "# " + marker + "\n\n> **粗體**\n\n- [x] 完成\n\n<script>文字</script>"
-                + "\n\n" + mixedLists;
+                + "\n\n" + mixedLists
+                + "\n\n- [x] 母項  \n  續行\n  - [ ] 子項";
         String rendered = MarkdownPreview.renderMarkup(original);
         check(rendered.contains("<h1>") && rendered.contains("<blockquote>")
                 && rendered.contains("<strong>粗體</strong>") && rendered.contains("type=\"checkbox\"")
@@ -555,7 +578,9 @@ public final class PinbaoRegression extends Instrumentation {
                     (MarkdownPreview) find(dialogRoot(screen), v -> v instanceof MarkdownPreview));
             inspectClipPreview(clip, "粗體");
             check(onMain(() -> hasOnlyPreviewSave(dialog(screen))), "clean preview has only Save");
+            check(onMain(() -> isEditorModeButton(screen, "編輯")), "preview has a distinct edit icon");
             onMain(() -> described(dialogRoot(screen), "編輯").performClick());
+            check(onMain(() -> isEditorModeButton(screen, "預覽")), "editor has a distinct preview icon");
             check(onMain(() -> find(dialogRoot(screen), v -> v instanceof EditText) == editInput(screen)
                     && named(dialogRoot(screen), "Markdown 格式") == null
                     && find(dialogRoot(screen), v -> v instanceof EditText t
@@ -730,23 +755,51 @@ public final class PinbaoRegression extends Instrumentation {
     private static String mixedListsAreAligned() {
         return """
                 (function () {
-                    var task = Array.from(document.querySelectorAll('li.vault-task'))
-                        .find(i => i.textContent.trim() === '麥穗');
-                    var paragraph = task && task.querySelector('p');
-                    var box = paragraph && paragraph.querySelector('input[type=checkbox]');
-                    if (!box) return false;
-                    var range = document.createRange();
-                    range.selectNodeContents(paragraph.lastChild);
-                    var text = range.getBoundingClientRect();
+                    var tasks = document.querySelectorAll('li.vault-task');
+                    var task = Array.from(tasks).find(i => i.textContent.trim() === '待辦事項');
+                    var sibling = task && task.nextElementSibling;
+                    var plain = task && Array.from(task.parentElement.children)
+                        .find(i => i.textContent.trim() === '項目');
+                    var firstLine = task && task.querySelector('p');
+                    var box = firstLine && firstLine.querySelector('input[type=checkbox]');
+                    var parent = Array.from(tasks).find(i => i.textContent.includes('母項'));
+                    var child = parent && parent.querySelector('li.vault-task');
+                    if (!box || !plain || !sibling || !child) return false;
+                    function textBounds(node) {
+                        var range = document.createRange();
+                        range.setStart(node, node.textContent.search(/\\S/));
+                        range.setEnd(node, node.textContent.length);
+                        return range.getBoundingClientRect();
+                    }
+                    var text = textBounds(firstLine.lastChild);
                     var check = box.getBoundingClientRect();
-                    var plain = task.nextElementSibling && task.nextElementSibling.nextElementSibling;
+                    var plainText = textBounds(plain.querySelector('p').firstChild);
+                    var continuation = parent.querySelector('br');
+                    var parentText = continuation && textBounds(continuation.previousSibling);
+                    var nextLine = continuation && textBounds(continuation.nextSibling);
                     var ordered = Array.from(document.querySelectorAll('ol')).find(
                         i => Array.from(i.children).map(c => c.textContent.trim()).join('|') === '項目|試試');
                     return Math.max(text.top, check.top) < Math.min(text.bottom, check.bottom)
+                        && check.right <= text.left && Math.abs(text.left - plainText.left) < 1
+                        && sibling.offsetTop - task.offsetTop - task.offsetHeight <= 5
                         && getComputedStyle(task).listStyleType === 'none'
-                        && plain && getComputedStyle(plain).listStyleType === 'disc' && !!ordered;
+                        && getComputedStyle(plain).listStyleType === 'disc' && !!ordered
+                        && document.querySelectorAll('hr').length >= 2
+                        && Array.from(document.querySelectorAll('p')).some(
+                            p => p.textContent.includes('版面會壞掉') && p.querySelector('br'))
+                        && parent.querySelector('input:checked')
+                        && nextLine && Math.abs(parentText.left - nextLine.left) < 1
+                        && child.getBoundingClientRect().left > parent.getBoundingClientRect().left;
                 })()
                 """;
+    }
+
+    private boolean isEditorModeButton(MainActivity activity, String label) {
+        View view = described(dialogRoot(activity), label);
+        return view instanceof android.widget.ImageButton icon
+                && icon.getWidth() >= activity.dp(48) && icon.getHeight() >= activity.dp(48)
+                && icon.getBackground() instanceof android.graphics.drawable.InsetDrawable
+                && icon.getImageTintList().getDefaultColor() == activity.getColor(R.color.vault_on_accent);
     }
 
     private static boolean hasOnlyPreviewSave(AlertDialog dialog) {
