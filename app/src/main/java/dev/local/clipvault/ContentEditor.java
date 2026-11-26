@@ -3,11 +3,14 @@ package dev.local.clipvault;
 import android.app.AlertDialog;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.widget.HorizontalScrollView;
+import android.widget.ImageButton;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
-import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -24,10 +27,9 @@ final class ContentEditor {
     private final FrameLayout content;
     private final String original;
     private MarkdownPreview preview;
-    private LinearLayout tabs;
-    private Button readTab;
-    private Button editTab;
-    private Button markup;
+    private HorizontalScrollView markupStrip;
+    private ImageButton mode;
+    private boolean adjustingList;
     private Supplier<String> readingSource;
     private AlertDialog dialog;
     private boolean startReading;
@@ -52,21 +54,84 @@ final class ContentEditor {
         readingSource = source;
         startReading = initiallyReading;
         input.setTypeface(Typeface.MONOSPACE);
-        tabs = activity.row();
-        readTab = tool("預覽", () -> selectReading(true));
-        editTab = tool("編輯", () -> selectReading(false));
-        tabs.addView(readTab, new LinearLayout.LayoutParams(0, -2, 1));
-        tabs.addView(editTab, new LinearLayout.LayoutParams(0, -2, 1));
-        body.addView(tabs, 0);
 
-        markup = tool("插入語法", () -> {});
-        markup.setOnClickListener(view -> showMarkupMenu(markup));
-        body.addView(markup, 1);
+        LinearLayout toolbar = activity.row();
+        markupStrip = new HorizontalScrollView(activity);
+        markupStrip.setHorizontalScrollBarEnabled(false);
+        LinearLayout tools = activity.row();
+        ImageButton headings = activity.iconButton(R.drawable.ic_md_heading, "標題", () -> {});
+        headings.setOnClickListener(view -> showHeadings(headings));
+        tools.addView(headings);
+        addTool(tools, R.drawable.ic_md_bold, "粗體", "**", "**", "文字", "");
+        addTool(tools, R.drawable.ic_md_italic, "斜體", "*", "*", "文字", "");
+        addTool(tools, R.drawable.ic_md_bullets, "項目清單", "- ", "", "項目", "list");
+        addTool(tools, R.drawable.ic_md_ordered, "編號清單", "1. ", "", "項目", "ordered");
+        addTool(tools, R.drawable.ic_md_tasks, "待辦清單", "- [ ] ", "", "待辦事項", "task");
+        addTool(tools, R.drawable.ic_md_quote, "引用", "> ", "", "引文", "quote");
+        ImageButton code = activity.iconButton(R.drawable.ic_md_code, "程式碼", () -> {});
+        code.setOnClickListener(view -> showCodeMenu(code));
+        tools.addView(code);
+        addTool(tools, R.drawable.ic_md_line, "分隔線", "\n---", "\n\n", "", "line");
+        addTool(tools, R.drawable.ic_link, "連結", "[", "](https://example.com)", "連結文字", "");
+        markupStrip.addView(tools);
+        toolbar.addView(markupStrip, new LinearLayout.LayoutParams(0, activity.dp(48), 1));
+
+        mode = activity.iconButton(R.drawable.ic_view, "預覽", () -> selectReading(preview == null));
+        toolbar.addView(mode);
+        body.addView(toolbar, 0);
+
+        input.addTextChangedListener(new TextWatcher() {
+            private int newline;
+
+            @Override public void beforeTextChanged(CharSequence text, int start, int count, int after) {}
+
+            @Override public void onTextChanged(CharSequence text, int start, int before, int count) {
+                newline = !adjustingList && before == 0 && count == 1 && text.charAt(start) == '\n' ? start : -1;
+            }
+
+            @Override public void afterTextChanged(Editable text) {
+                if (newline < 0 || adjustingList) return;
+                MarkdownLists.Continuation next = MarkdownLists.afterEnter(text, newline);
+                if (next == null || text.length() + next.text().length() - (next.end() - next.start()) > Vault.MAX_TEXT) return;
+                adjustingList = true;
+                try {
+                    text.replace(next.start(), next.end(), next.text());
+                    input.setSelection(next.start() + next.text().length());
+                } finally {
+                    adjustingList = false;
+                }
+            }
+        });
     }
 
-    private Button tool(String label, Runnable action) {
-        return activity.button(label, activity.getColor(R.color.vault_surface_soft),
-                activity.getColor(R.color.vault_accent), action);
+    private void addTool(LinearLayout tools, int icon, String name, String prefix, String suffix,
+                         String placeholder, String kind) {
+        tools.addView(activity.iconButton(icon, name, () -> insert(prefix, suffix, placeholder, kind)));
+    }
+
+    private void showHeadings(View anchor) {
+        PopupMenu menu = new PopupMenu(activity, anchor);
+        for (int level = 1; level <= 3; level++) {
+            String prefix = new String[] {"# ", "## ", "### "}[level - 1];
+            menu.getMenu().add(level + " 級標題").setOnMenuItemClickListener(item -> {
+                insert(prefix, "", "標題", "line");
+                return true;
+            });
+        }
+        menu.show();
+    }
+
+    private void showCodeMenu(View anchor) {
+        PopupMenu menu = new PopupMenu(activity, anchor);
+        menu.getMenu().add("行內程式碼").setOnMenuItemClickListener(item -> {
+            insert("`", "`", "程式碼", "");
+            return true;
+        });
+        menu.getMenu().add("程式碼區塊").setOnMenuItemClickListener(item -> {
+            insert("```\n", "\n```\n", "程式碼", "line");
+            return true;
+        });
+        menu.show();
     }
 
     private void selectReading(boolean reading) {
@@ -84,18 +149,16 @@ final class ContentEditor {
 
     private void displayMode(boolean reading) {
         input.setVisibility(reading ? View.GONE : View.VISIBLE);
-        for (int index = 0; index < body.getChildCount(); index++) {
-            View child = body.getChildAt(index);
-            if (child != tabs && child != content) child.setVisibility(reading ? View.GONE : View.VISIBLE);
-        }
-        readTab.setSelected(reading);
-        editTab.setSelected(!reading);
-        readTab.setTextColor(activity.getColor(reading ? R.color.vault_on_accent : R.color.vault_text));
-        editTab.setTextColor(activity.getColor(reading ? R.color.vault_text : R.color.vault_on_accent));
-        activity.styleModeButton(readTab, reading);
-        activity.styleModeButton(editTab, !reading);
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setVisibility(reading ? View.GONE : View.VISIBLE);
-        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setText(reading ? "關閉" : "取消");
+        markupStrip.setVisibility(reading ? View.INVISIBLE : View.VISIBLE);
+        mode.setImageResource(reading ? R.drawable.ic_edit : R.drawable.ic_view);
+        mode.setContentDescription(reading ? "編輯" : "預覽");
+        mode.setTooltipText(reading ? "編輯" : "預覽");
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setText(reading && !dirty() ? "關閉" : "存檔");
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setVisibility(reading && !dirty() ? View.GONE : View.VISIBLE);
+    }
+
+    private boolean dirty() {
+        return !original.contentEquals(input.getText());
     }
 
     private void closePreview() {
@@ -105,43 +168,20 @@ final class ContentEditor {
         preview = null;
     }
 
-    private void showMarkupMenu(View anchor) {
-        PopupMenu menu = new PopupMenu(activity, anchor);
-        String[][] snippets = {
-            {"標題", "# ", "", "標題", "line"},
-            {"粗體", "**", "**", "文字", ""},
-            {"斜體", "*", "*", "文字", ""},
-            {"引用", "> ", "", "引文", "quote"},
-            {"項目清單", "- ", "", "項目", "list"},
-            {"編號清單", "1. ", "", "項目", "ordered"},
-            {"待辦清單", "- [ ] ", "", "待辦事項", "task"},
-            {"行內程式碼", "`", "`", "程式碼", ""},
-            {"程式碼區塊", "```\n", "\n```\n", "程式碼", "line"},
-            {"分隔線", "\n---", "\n\n", "", "line"},
-            {"連結", "[", "](https://example.com)", "連結文字", ""}
-        };
-        for (String[] snippet : snippets) {
-            menu.getMenu().add(snippet[0]).setOnMenuItemClickListener(item -> {
-                insert(snippet);
-                return true;
-            });
-        }
-        menu.show();
-    }
-
-    private void insert(String[] snippet) {
+    private void insert(String prefix, String suffix, String placeholder, String kind) {
+        if (!activity.canAct()) return;
+        String linePrefix = prefix;
         int start = Math.min(input.getSelectionStart(), input.getSelectionEnd());
         int end = Math.max(input.getSelectionStart(), input.getSelectionEnd());
         if (start < 0) start = end = input.length();
         String selection = input.getText().subSequence(start, end).toString();
-        String value = selection.isEmpty() ? snippet[3] : selection;
-        String prefix = snippet[1];
-        if (!snippet[4].isEmpty() && start > 0 && input.getText().charAt(start - 1) != '\n') {
+        String value = selection.isEmpty() ? placeholder : selection;
+        if (!kind.isEmpty() && start > 0 && input.getText().charAt(start - 1) != '\n') {
             prefix = "\n" + prefix;
         }
-        if (snippet[4].equals("quote") || snippet[4].equals("list") || snippet[4].equals("task")) {
-            value = value.replace("\n", "\n" + snippet[1]);
-        } else if (snippet[4].equals("ordered")) {
+        if (kind.equals("quote") || kind.equals("list") || kind.equals("task")) {
+            value = value.replace("\n", "\n" + linePrefix);
+        } else if (kind.equals("ordered")) {
             String[] lines = value.split("\n", -1);
             StringBuilder numbered = new StringBuilder(lines[0]);
             for (int index = 1; index < lines.length; index++) numbered.append('\n')
@@ -149,22 +189,36 @@ final class ContentEditor {
             value = numbered.toString();
         }
         input.requestFocus();
-        input.getText().replace(start, end, prefix + value + snippet[2]);
+        input.getText().replace(start, end, prefix + value + suffix);
         int first = Math.min(start + prefix.length(), input.length());
         input.setSelection(first, Math.min(first + value.length(), input.length()));
     }
 
-    void show(String title, boolean fullscreen, BooleanSupplier sensitive, BooleanSupplier optionsChanged,
-              Consumer<String> save) {
-        show(title, fullscreen, sensitive, optionsChanged, () -> false, save);
+    void show(String title, boolean fullscreen, BooleanSupplier sensitive, Consumer<String> save) {
+        show(title, fullscreen, sensitive, () -> false, save);
     }
 
-    void show(String title, boolean fullscreen, BooleanSupplier sensitive, BooleanSupplier optionsChanged,
+    void show(String title, boolean fullscreen, BooleanSupplier sensitive,
               BooleanSupplier hasAlternativeContent, Consumer<String> save) {
-        dialog = activity.show(new AlertDialog.Builder(activity)
-                .setTitle(title).setView(fullscreen ? fillHeight(body) : body).setNegativeButton("取消", null).setPositiveButton("儲存", null),
-                sensitive.getAsBoolean(), this::closePreview);
-        activity.keepEditorWhileBackgrounded();
+        dialog = activity.show(new AlertDialog.Builder(activity).setTitle(title)
+                .setView(fullscreen ? fillHeight(body) : body).setNegativeButton("取消", null)
+                .setPositiveButton("儲存", null), sensitive.getAsBoolean(), this::closePreview);
+        boolean markdown = readingSource != null;
+        Runnable commit = () -> {
+            if (!activity.canAct()) return;
+            String value = input.getText().toString();
+            if (markdown && (!dirty() || (original.isEmpty() && value.trim().isEmpty()))) {
+                dialog.dismiss();
+                return;
+            }
+            if (value.trim().isEmpty() && !hasAlternativeContent.getAsBoolean()) {
+                if (preview != null) selectReading(false);
+                input.setError("請輸入文字");
+                return;
+            }
+            save.accept(value);
+        };
+        activity.keepEditorWhileBackgrounded(markdown ? () -> { if (dirty()) commit.run(); } : null);
         body.requestFocus();
         dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
                 | WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
@@ -174,35 +228,27 @@ final class ContentEditor {
 
         Runnable cancel = () -> {
             if (!activity.canAct()) return;
-            if (!original.contentEquals(input.getText()) || optionsChanged.getAsBoolean()) {
+            if (markdown || !dirty()) {
+                dialog.dismiss();
+            } else {
                 activity.getSystemService(InputMethodManager.class)
                         .hideSoftInputFromWindow(input.getWindowToken(), 0);
                 showDiscard(dialog);
-            } else {
-                dialog.dismiss();
             }
         };
+        Runnable back = markdown ? commit : cancel;
         dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(view -> cancel.run());
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> commit.run());
         dialog.setOnKeyListener((ignored, key, event) -> {
             if (key != KeyEvent.KEYCODE_BACK) return false;
-            if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) cancel.run();
+            if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) back.run();
             return true;
         });
         if (android.os.Build.VERSION.SDK_INT >= 33) {
-            android.window.OnBackInvokedDispatcher back = dialog.getOnBackInvokedDispatcher();
-            back.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
-                    cancel::run);
+            android.window.OnBackInvokedDispatcher dispatcher = dialog.getOnBackInvokedDispatcher();
+            dispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, back::run);
         }
-        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
-            if (!activity.canAct()) return;
-            String value = input.getText().toString();
-            if (value.trim().isEmpty() && !hasAlternativeContent.getAsBoolean()) {
-                input.setError("請輸入文字");
-                return;
-            }
-            save.accept(value);
-        });
-        if (readingSource != null) selectReading(startReading);
+        if (markdown) selectReading(startReading);
     }
 
     private void showDiscard(AlertDialog editor) {

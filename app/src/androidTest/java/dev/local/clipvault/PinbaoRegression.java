@@ -91,26 +91,30 @@ public final class PinbaoRegression extends Instrumentation {
             clips.add(image.id());
             Vault.Entry link = vault.addText("https://example.com/" + marker, true, "連結提示");
             clips.add(link.id());
-            check(link.privateTitle().equals("連結提示"), "description set on new capture");
+            check(link.displayTitle().equals("連結提示"), "description set on new capture");
 
             check(!vault.addDraftClips(draft.id(), List.of(text.id(), image.id()), false).sensitive(), "public copies");
             vault.protectEntry(text.id(), "  工作帳號\n副本  ");
             vault.protectEntry(image.id(), "");
-            check(vault.entry(text.id()).privateTitle().equals("工作帳號 副本"), "conversion description");
-            check(vault.entry(image.id()).privateTitle().equals("****"), "blank description falls back to mask");
-            check(vault.addText(marker, true, "new capture").privateTitle().equals("工作帳號 副本"),
+            check(vault.entry(text.id()).displayTitle().equals("工作帳號 副本"), "conversion description");
+            check(vault.entry(image.id()).displayTitle().equals("****"), "blank description falls back to mask");
+            check(vault.addText(marker, true, "new capture").displayTitle().equals("工作帳號 副本"),
                     "duplicate capture preserves the existing description");
             vault.updateText(text.id(), marker + " edited", TextFormat.PLAIN);
-            check(vault.entry(text.id()).privateTitle().equals("工作帳號 副本"), "content edits preserve description");
-            vault.updateOptions(text.id(), true, "fixture", "已編輯提示");
+            check(vault.entry(text.id()).displayTitle().equals("工作帳號 副本"), "content edits preserve description");
+            vault.setPinned(text.id(), true);
+            vault.updateDetails(text.id(), "fixture", "已編輯標題");
             Vault.Entry renamed = vault.entry(text.id());
-            check(Vault.Entry.fromJson(renamed.toJson()).privateTitle().equals("已編輯提示"),
+            check(Vault.Entry.fromJson(renamed.toJson()).displayTitle().equals("已編輯標題"),
                     "edited description survives serialization");
             JSONObject legacyEntry = renamed.toJson();
+            legacyEntry.remove("title");
+            legacyEntry.put("privateDescription", "舊版描述");
+            check(Vault.Entry.fromJson(legacyEntry).displayTitle().equals("舊版描述"), "legacy title kept");
             legacyEntry.remove("privateDescription");
-            check(Vault.Entry.fromJson(legacyEntry).privateTitle().equals("****"), "legacy entry fallback");
-            vault.updateOptions(text.id(), true, "fixture", "　 ");
-            check(vault.entry(text.id()).privateTitle().equals("****"), "clear description");
+            check(Vault.Entry.fromJson(legacyEntry).displayTitle().equals("****"), "legacy entry fallback");
+            vault.updateDetails(text.id(), "fixture", "　 ");
+            check(vault.entry(text.id()).displayTitle().equals("****"), "clear description");
             check(vault.entry(text.id()).sensitive() && vault.entry(text.id()).pinned(), "options keep privacy");
             try {
                 vault.addDraftClips(draft.id(), List.of(link.id()), false);
@@ -232,7 +236,7 @@ public final class PinbaoRegression extends Instrumentation {
         Vault.Entry source = vault.addText("插入驗收 " + marker, false, "");
         MainActivity ui = null;
         try {
-            vault.updateOptions(source.id(), true, "", null);
+            vault.setPinned(source.id(), true);
             ArrayList<Draft.Block> blocks = new ArrayList<>();
             for (int index = 0; index < 10; index++) {
                 blocks.add(Draft.Block.text(Draft.Block.PARAGRAPH, "排序項目 " + index));
@@ -278,7 +282,7 @@ public final class PinbaoRegression extends Instrumentation {
                     && action(activity, "新增文字") != null), "clip list ready");
             onMain(() -> named(root(activity), source.content()).performClick());
             runOnMainSync(() -> {
-                button(dialogRoot(activity), "編輯").performClick();
+                described(dialogRoot(activity), "編輯").performClick();
                 AlertDialog shown = dialog(activity);
                 EditText input = (EditText) find(shown.getWindow().getDecorView(), v -> v instanceof EditText);
                 input.setText(source.content() + " 已更新");
@@ -539,7 +543,7 @@ public final class PinbaoRegression extends Instrumentation {
             MarkdownPreview clip = onMain(() ->
                     (MarkdownPreview) find(dialogRoot(screen), v -> v instanceof MarkdownPreview));
             inspectClipPreview(clip, "粗體");
-            onMain(() -> button(dialogRoot(screen), "編輯").performClick());
+            onMain(() -> described(dialogRoot(screen), "編輯").performClick());
             check(onMain(() -> find(dialogRoot(screen), v -> v instanceof EditText) == editInput(screen)
                     && named(dialogRoot(screen), "Markdown 格式") == null
                     && find(dialogRoot(screen), v -> v instanceof EditText t
@@ -550,19 +554,35 @@ public final class PinbaoRegression extends Instrumentation {
             runOnMainSync(() -> {
                 editInput(screen).append("\n\n新增段落");
                 AlertDialog session = dialog(screen);
-                button(dialogRoot(screen), "預覽").performClick();
-                check(dialog(screen) == session && !session.getButton(AlertDialog.BUTTON_POSITIVE).isShown(),
-                        "reading uses the same session");
-                button(dialogRoot(screen), "編輯").performClick();
+                described(dialogRoot(screen), "預覽").performClick();
+                check(dialog(screen) == session
+                        && "存檔".contentEquals(session.getButton(AlertDialog.BUTTON_POSITIVE).getText()),
+                        "reading with edits offers save in the same session");
+                described(dialogRoot(screen), "編輯").performClick();
                 check(editInput(screen).getText().toString().endsWith("新增段落"), "tab retains input");
             });
             sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
-            await(() -> onMain(() -> editorOverlay(screen) != null), "back asks before discarding");
-            onMain(() -> editorOverlay(screen).getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
-            check(onMain(() -> editInput(screen).getText().toString().endsWith("新增段落")), "continue keeps edit");
-            onMain(() -> dialog(screen).getButton(AlertDialog.BUTTON_POSITIVE).performClick());
             await(() -> onMain(() -> screen.canAct() && dialog(screen) == null), "editor saved");
             String edited = original + "\n\n新增段落";
+            onMain(() -> action(screen, "新增文字").performClick());
+            runOnMainSync(() -> {
+                View editorRoot = dialogRoot(screen);
+                check(named(editorRoot, "標為私密") == null, "new editor omits private option");
+                check(described(editorRoot, "標題") != null && described(editorRoot, "預覽") != null,
+                        "Markdown toolbar uses accessible icons");
+                EditText field = editInput(screen);
+                field.setText("  7. 第一項");
+                field.append("\n");
+                check(field.getText().toString().equals("  7. 第一項\n  8. "), "Enter continues ordered list");
+                field.append("\n");
+                check(field.getText().toString().equals("  7. 第一項\n"), "Enter exits empty list item");
+                field.setText("- [x] 完成");
+                field.append("\n");
+                check(field.getText().toString().endsWith("\n- [ ] "), "task continuation resets the check");
+                dialog(screen).getButton(AlertDialog.BUTTON_NEGATIVE).performClick();
+            });
+            check(vault.list().stream().noneMatch(item -> item.content().equals("- [x] 完成\n- [ ] ")),
+                    "cancel does not create a new card");
             check(vault.entry(entry.id()).content().equals(edited) && vault.entry(entry.id()).url().equals(url),
                     "exact source stored with independent URL");
             onMain(() -> clipAction(screen, edited, "複製").performClick());
@@ -606,7 +626,19 @@ public final class PinbaoRegression extends Instrumentation {
             check(onMain(() -> scale(photo) == base), "reset zoom");
             onMain(() -> dialog(screen).getButton(AlertDialog.BUTTON_POSITIVE).performClick());
 
-            Draft inserted = vault.addDraftClips(draft.id(), List.of(entry.id(), image.id(), legacy.id()), false);
+            View search = onMain(() -> find(root(screen), v -> v instanceof EditText));
+            runOnMainSync(() -> {
+                ScrollView list = (ScrollView) find(root(screen), v -> v instanceof ScrollView);
+                check(search != null && find(list, v -> v == search) == null, "search stays above list");
+            });
+            onMain(() -> described((View) named(root(screen), edited).getParent(), "加入拼報").performClick());
+            await(() -> onMain(() -> dialog(screen) != null && dialog(screen).getListView() != null), "Pinbao picker");
+            onMain(() -> choose(dialog(screen).getListView(), draft.title()));
+            await(() -> onMain(() -> screen.canAct() && dialog(screen) == null), "added from clip list");
+            check(onMain(() -> action(screen, "新增文字") != null && action(screen, "預覽全文") == null),
+                    "adding to Pinbao leaves clip list active");
+            check(vault.draft(draft.id()).blocks().size() == 1, "clip added from its toolbar");
+            Draft inserted = vault.addDraftClips(draft.id(), List.of(image.id(), legacy.id()), false);
             check(inserted.blocks().get(0).content().equals(edited)
                     && inserted.blocks().get(2).content().equals(legacy.url()), "Pinbao copies only actual content");
             JSONObject priorBlock = inserted.blocks().get(0).toJson().put("url", url);
@@ -650,9 +682,9 @@ public final class PinbaoRegression extends Instrumentation {
                 return screen.canAct() && clipData != null && markdown.contentEquals(clipData.getItemAt(0).getText())
                         && !isSensitiveClipboard(clipData);
             }), "public Pinbao copy keeps body links and public clipboard status");
-            runOnMainSync(() -> screen.copyArticle("私密拼報", marker, true));
-            check(onMain(() -> isSensitiveClipboard(screen.getSystemService(android.content.ClipboardManager.class)
-                    .getPrimaryClip())), "private Pinbao clipboard status remains sensitive");
+            onMain(() -> action(screen, "剪輯").performClick());
+            await(() -> onMain(() -> screen.canAct() && screen.hasWindowFocus()), "return to clips");
+            verifyPrivateCopy(vault, screen, marker);
         } finally {
             if (activity != null) {
                 MainActivity screen = activity;
@@ -737,6 +769,69 @@ public final class PinbaoRegression extends Instrumentation {
         }
     }
 
+    private void verifyPrivateCopy(Vault vault, MainActivity screen, String marker) throws Exception {
+        String value = "私密副本 " + marker;
+        Vault.Entry original = vault.addText(value, false, "");
+        try {
+            onMain(() -> {
+                screen.openClips();
+                return null;
+            });
+            await(() -> onMain(() -> screen.canAct() && named(root(screen), value) != null), "new card visible");
+            onMain(() -> clipAction(screen, value, "更多").performClick());
+            onMain(() -> choose(dialog(screen).getListView(), "標題與標籤"));
+            runOnMainSync(() -> {
+                editInput(screen).setText("可辨認的自訂標題");
+                dialog(screen).getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            });
+            await(() -> onMain(() -> screen.canAct() && named(root(screen), "可辨認的自訂標題") != null),
+                    "public title is visible");
+            onMain(() -> described((View) named(root(screen), value).getParent(), "設為私密").performClick());
+            runOnMainSync(() -> {
+                check("可辨認的自訂標題".contentEquals(editInput(screen).getText()), "protect dialog carries title");
+                editInput(screen).setText("");
+                dialog(screen).getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            });
+            await(() -> onMain(() -> screen.canAct() && named(root(screen), "****") != null
+                    && named(root(screen), value) == null), "private title masked and body hidden");
+            check(vault.entry(original.id()).sensitive() && vault.entry(original.id()).title().isEmpty(),
+                    "protecting can clear exposed title");
+            await(() -> onMain(screen::hasWindowFocus), "private clip screen focused");
+            runOnMainSync(() -> screen.copyArticle("私密拼報", value, true));
+            android.content.ClipboardManager manager = screen.getSystemService(android.content.ClipboardManager.class);
+            check(onMain(() -> isSensitiveClipboard(manager.getPrimaryClip())), "system clip stays sensitive");
+            onMain(() -> action(screen, "儲存目前剪貼簿").performClick());
+            await(() -> onMain(() -> dialog(screen) != null), "verified recapture prompt");
+            runOnMainSync(() -> {
+                var mask = (android.widget.CheckBox) named(dialogRoot(screen), "標為私密");
+                check(mask.isEnabled() && mask.isChecked(), "verified copy defaults to private and can opt out");
+                mask.setChecked(false);
+                dialog(screen).getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            });
+            await(() -> onMain(() -> screen.canAct() && dialog(screen) == null), "general copy saved");
+            check(vault.entry(original.id()).sensitive() && vault.list().stream()
+                    .anyMatch(e -> !e.sensitive() && e.content().equals(value)), "separate general copy");
+
+            SystemClock.sleep(25);
+            runOnMainSync(() -> manager.setPrimaryClip(manager.getPrimaryClip()));
+            onMain(() -> action(screen, "儲存目前剪貼簿").performClick());
+            await(() -> onMain(() -> dialog(screen) != null), "replacement recapture prompt");
+            check(onMain(() -> {
+                var mask = (android.widget.CheckBox) named(dialogRoot(screen), "標為私密");
+                return mask.isChecked() && !mask.isEnabled();
+            }), "a new clipboard write cannot reuse an earlier verified receipt");
+            onMain(() -> dialog(screen).getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
+        } finally {
+            for (Vault.Entry entry : vault.list()) {
+                if (entry.content().equals(value)) vault.delete(entry.id());
+            }
+        }
+    }
+
+    private static View described(View root, String label) {
+        return find(root, v -> label.contentEquals(v.getContentDescription() == null ? "" : v.getContentDescription()));
+    }
+
     private static boolean isSensitiveClipboard(android.content.ClipData clip) {
         var extras = clip.getDescription().getExtras();
         return extras != null && extras.getBoolean("android.content.extra.IS_SENSITIVE");
@@ -761,16 +856,6 @@ public final class PinbaoRegression extends Instrumentation {
 
     private static EditText editInput(MainActivity activity) {
         return (EditText) find(dialogRoot(activity), view -> view instanceof EditText);
-    }
-
-    private static AlertDialog editorOverlay(MainActivity activity) {
-        try {
-            var field = MainActivity.class.getDeclaredField("overlay");
-            field.setAccessible(true);
-            return (AlertDialog) field.get(activity);
-        } catch (ReflectiveOperationException failure) {
-            throw new AssertionError(failure);
-        }
     }
 
     private static float scale(ZoomImage image) {

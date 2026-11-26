@@ -33,7 +33,7 @@ import javax.crypto.spec.GCMParameterSpec;
 final class Vault {
     static final int MAX_TEXT = 20_000;
     static final int MAX_LINK = 20_000;
-    static final int MAX_PRIVATE_DESCRIPTION = 80;
+    static final int MAX_CLIP_TITLE = 80;
     static final int MAX_ATTACHMENT = 16 * 1024 * 1024;
     private static final int MAX_ENTRIES = 200;
     private static final int MAX_DRAFTS = 30;
@@ -45,7 +45,7 @@ final class Vault {
     private static Vault instance;
 
     record Entry(String id, String mime, String content, long savedAt, int bytes,
-                 boolean pinned, boolean starred, boolean sensitive, String tag, String privateDescription,
+                 boolean pinned, boolean starred, boolean sensitive, String tag, String title,
                  String url, TextFormat format) {
         boolean attachment() { return !mime.equals("text/plain"); }
 
@@ -57,8 +57,10 @@ final class Vault {
 
         boolean canEditUrl() { return !attachment() || supportsAttachment(mime); }
 
-        String privateTitle() {
-            return privateDescription.isEmpty() ? "****" : privateDescription;
+        String displayTitle() {
+            if (!title.isEmpty()) return title;
+            if (sensitive) return "****";
+            return type().equals("PDF") ? "附件" : type();
         }
 
         Entry withOptions(boolean pin, boolean star, String label, String description) {
@@ -74,7 +76,7 @@ final class Vault {
                     .put("id", id).put("mime", mime).put("content", content)
                     .put("savedAt", savedAt).put("bytes", bytes).put("pinned", pinned)
                     .put("starred", starred).put("sensitive", sensitive).put("tag", tag)
-                    .put("privateDescription", privateDescription).put("url", url).put("format", format.name());
+                    .put("title", title).put("url", url).put("format", format.name());
         }
 
         static Entry fromJson(JSONObject json) throws Exception {
@@ -88,7 +90,7 @@ final class Vault {
             return new Entry(json.getString("id"), mime, content,
                     json.getLong("savedAt"), json.getInt("bytes"), json.getBoolean("pinned"),
                     json.getBoolean("starred"), json.getBoolean("sensitive"), json.getString("tag"),
-                    json.optString("privateDescription", ""), url,
+                    json.optString("title", json.optString("privateDescription", "")), url,
                     TextFormat.stored(json.optString("format"), TextFormat.LEGACY));
         }
     }
@@ -156,29 +158,47 @@ final class Vault {
         return addText(url.isEmpty() ? text : url, url, format, sensitive, description);
     }
 
+    synchronized Entry addGeneralCopy(String text) throws Exception {
+        String url = isWebLink(text) ? text.trim() : "";
+        return storeText(url.isEmpty() ? text : url, url, TextFormat.PLAIN, false, "", true);
+    }
+
     synchronized Entry addText(String text, String url, TextFormat format, boolean sensitive, String description)
             throws Exception {
+        return storeText(text, url, format, sensitive, description, false);
+    }
+
+    private Entry storeText(String text, String url, TextFormat format, boolean sensitive,
+                            String description, boolean separate) throws Exception {
         url = normalizeUrl(url);
         text = clipBody(text, url);
-        String privateDescription = sensitive ? normalizeDescription(description) : "";
+        String title = sensitive ? normalizeTitle(description) : "";
         load();
         prune();
         long now = System.currentTimeMillis();
         ArrayList<Entry> next = new ArrayList<>(entries);
-        for (int i = 0; i < next.size(); i++) {
+        int match = -1;
+        for (int i = 0; !separate && i < next.size(); i++) {
             Entry old = next.get(i);
-            if (!old.attachment() && old.content().equals(text) && old.url().equals(url)) {
-                Entry updated = new Entry(old.id(), old.mime(), text, now, 0, old.pinned(),
-                        old.starred(), old.sensitive() || sensitive, old.tag(),
-                        old.sensitive() ? old.privateDescription() : privateDescription, url,
-                        format == TextFormat.MARKDOWN ? format : old.format());
-                next.set(i, updated);
-                commit(next, retention);
-                return updated;
+            if (old.attachment() || !old.content().equals(text) || !old.url().equals(url)) continue;
+            if (match < 0) match = i;
+            if (old.sensitive() == sensitive) {
+                match = i;
+                break;
             }
         }
+        if (match >= 0) {
+            Entry old = next.get(match);
+            String keptTitle = old.sensitive() || !old.title().isEmpty() ? old.title() : title;
+            Entry updated = new Entry(old.id(), old.mime(), text, now, 0, old.pinned(),
+                    old.starred(), old.sensitive() || sensitive, old.tag(), keptTitle, url,
+                    format == TextFormat.MARKDOWN ? format : old.format());
+            next.set(match, updated);
+            commit(next, retention);
+            return updated;
+        }
         Entry entry = new Entry(UUID.randomUUID().toString(), "text/plain", text, now, 0,
-                false, false, sensitive, "", privateDescription, url, format);
+                false, false, sensitive, "", title, url, format);
         insert(next, entry);
         return entry;
     }
@@ -208,7 +228,7 @@ final class Vault {
     private void updateClip(Entry current, String content, String url, TextFormat format) throws Exception {
         Entry changed = new Entry(current.id(), current.mime(), content, current.savedAt(), current.bytes(),
                 current.pinned(), current.starred(), current.sensitive(), current.tag(),
-                current.privateDescription(), url, format);
+                current.title(), url, format);
         if (!changed.equals(current)) update(changed);
     }
 
@@ -227,9 +247,9 @@ final class Vault {
         return trimmed;
     }
 
-    private static String normalizeDescription(String value) throws Limit {
+    private static String normalizeTitle(String value) throws Limit {
         String singleLine = value.replaceAll("\\R", " ").replaceAll("^\\h+|\\h+$", "");
-        if (singleLine.length() > MAX_PRIVATE_DESCRIPTION) throw new Limit("顯示描述最多 80 個字元。");
+        if (singleLine.length() > MAX_CLIP_TITLE) throw new Limit("顯示標題最多 80 個字元。");
         return singleLine;
     }
 
@@ -244,7 +264,7 @@ final class Vault {
         long used = storedAttachments(next, drafts).values().stream().mapToLong(Integer::longValue).sum();
         if (used + data.length > MAX_MEDIA_TOTAL) throw new Limit("附件空間已滿（96 MiB）。");
         Entry entry = new Entry(UUID.randomUUID().toString(), mime, name, System.currentTimeMillis(),
-                data.length, false, false, sensitive, "", sensitive ? normalizeDescription(description) : "", "", TextFormat.PLAIN);
+                data.length, false, false, sensitive, "", sensitive ? normalizeTitle(description) : "", "", TextFormat.PLAIN);
         File encrypted = file(entry.id());
         write(new AtomicFile(encrypted), encrypt(data, entry.id()));
         try {
@@ -256,22 +276,19 @@ final class Vault {
         return entry;
     }
 
-    synchronized void updateOptions(String id, boolean pin, String tag, String description)
-            throws Exception {
+    synchronized void updateDetails(String id, String tag, String title) throws Exception {
         Entry current = entry(id);
-        String display = current.sensitive() && description != null
-                ? normalizeDescription(description) : current.privateDescription();
-        update(current.withOptions(pin, current.starred(), tag, display));
+        update(current.withOptions(current.pinned(), current.starred(), tag, normalizeTitle(title)));
     }
 
     synchronized void setPinned(String id, boolean pinned) throws Exception {
         Entry current = entry(id);
-        update(current.withOptions(pinned, current.starred(), current.tag(), current.privateDescription()));
+        update(current.withOptions(pinned, current.starred(), current.tag(), current.title()));
     }
 
     synchronized void protectEntry(String id, String description) throws Exception {
         Entry current = entry(id);
-        if (!current.sensitive()) update(current.protect(normalizeDescription(description)));
+        if (!current.sensitive()) update(current.protect(normalizeTitle(description)));
     }
 
     private void update(Entry entry) throws Exception {

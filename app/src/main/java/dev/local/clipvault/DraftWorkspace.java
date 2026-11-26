@@ -192,7 +192,7 @@ final class DraftWorkspace {
             }
             activity.show(new AlertDialog.Builder(activity).setTitle("加入拼報")
                     .setItems(drafts.stream().map(DraftWorkspace::displayName).toArray(String[]::new),
-                            (dialog, which) -> insert(drafts.get(which), Collections.singletonList(entry)))
+                            (dialog, which) -> insert(drafts.get(which), Collections.singletonList(entry), true))
                     .setNegativeButton("取消", null));
         });
     }
@@ -222,10 +222,10 @@ final class DraftWorkspace {
         IntFunction<String> heading = index -> {
             int order = 1;
             for (int selected : selection) {
-                if (selected == index) return order + " · " + available.get(index).type();
+                if (selected == index) return order + " · " + (available.get(index).sensitive() ? "私密" : available.get(index).type());
                 order++;
             }
-            return available.get(index).type();
+            return (available.get(index).sensitive() ? "私密" : available.get(index).type());
         };
         ListView list = pickerCards(available.size(), heading, index -> clipLabel(available.get(index)),
                 selection::contains);
@@ -244,7 +244,7 @@ final class DraftWorkspace {
             ArrayList<Vault.Entry> selected = new ArrayList<>(selection.size());
             for (int index : selection) selected.add(available.get(index));
             sheet.dismiss();
-            insert(draft, selected);
+            insert(draft, selected, false);
         });
     }
 
@@ -295,11 +295,16 @@ final class DraftWorkspace {
         return list;
     }
 
-    private void insert(Draft draft, List<Vault.Entry> selected) {
+    private void insert(Draft draft, List<Vault.Entry> selected, boolean fromClips) {
         boolean sensitive = draft.sensitive() || selected.stream().anyMatch(Vault.Entry::sensitive);
         ArrayList<String> ids = new ArrayList<>(selected.size());
         for (Vault.Entry entry : selected) ids.add(entry.id());
         activity.authorize(sensitive, "插入私密剪輯", () -> {
+            if (fromClips) {
+                activity.runForeground(() -> vault.addDraftClips(draft.id(), ids, sensitive),
+                        saved -> activity.toast("已加入拼報"));
+                return;
+            }
             Map<String, Bitmap> cached = current != null && current.id().equals(draft.id())
                     ? cardImages : Collections.emptyMap();
             activity.runForeground(() -> {
@@ -1049,7 +1054,7 @@ final class DraftWorkspace {
     }
 
     private static String clipLabel(Vault.Entry entry) {
-        if (entry.sensitive()) return "私密 · " + entry.privateTitle();
+        if (entry.sensitive()) return "私密 · " + entry.displayTitle();
         return entry.content();
     }
 
@@ -1062,7 +1067,7 @@ final class DraftWorkspace {
                           Function<String, String> prepare, Consumer<String> done) {
         if (!activity.canAct()) return;
         ContentEditor editor = new ContentEditor(activity, hint, value, limit, multiline);
-        editor.show(title, multiline, () -> current != null && current.sensitive(), () -> false, text -> {
+        editor.show(title, multiline, () -> current != null && current.sensitive(), text -> {
             String prepared;
             try {
                 prepared = prepare.apply(multiline ? text : text.trim());
