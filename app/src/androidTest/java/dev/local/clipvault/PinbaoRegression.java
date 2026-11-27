@@ -22,6 +22,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.nio.charset.StandardCharsets;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -36,10 +37,12 @@ import java.util.function.Supplier;
 public final class PinbaoRegression extends Instrumentation {
     private record Point(float x, float y) {}
     private boolean contentOnly;
+    private boolean linksOnly;
 
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
         contentOnly = arguments != null && "content".equals(arguments.getString("scope"));
+        linksOnly = arguments != null && "links".equals(arguments.getString("scope"));
         start();
     }
 
@@ -47,7 +50,7 @@ public final class PinbaoRegression extends Instrumentation {
         Bundle report = new Bundle();
         try {
             Vault vault = Vault.get(getTargetContext());
-            if (!contentOnly) {
+            if (!contentOnly && !linksOnly) {
                 checklist();
                 arrangement();
                 privacy(vault, UUID.randomUUID().toString());
@@ -55,16 +58,89 @@ public final class PinbaoRegression extends Instrumentation {
                 reorder(vault, UUID.randomUUID().toString());
                 workspace(vault, UUID.randomUUID().toString());
             }
-            contentEditing(vault, UUID.randomUUID().toString());
+            if (!linksOnly) contentEditing(vault, UUID.randomUUID().toString());
+            linkPreviews(vault, UUID.randomUUID().toString());
             var config = getTargetContext().getResources().getConfiguration();
             int dpi = getTargetContext().getResources().getDisplayMetrics().densityDpi;
-            report.putString("stream", "PASS " + (contentOnly ? "" : "Pinbao, ")
-                    + "content editing, Markdown, and image preview at " + config.screenWidthDp
+            report.putString("stream", "PASS " + (linksOnly ? "" : (contentOnly ? "" : "Pinbao, ")
+                    + "content editing, Markdown, image preview, and ") + "URL and video preview at " + config.screenWidthDp
                     + "dp, font scale " + config.fontScale + ", density " + dpi + "dpi\n");
             finish(Activity.RESULT_OK, report);
         } catch (Throwable error) {
             report.putString("stream", android.util.Log.getStackTraceString(error));
             finish(Activity.RESULT_CANCELED, report);
+        }
+    }
+
+    private void linkPreviews(Vault vault, String marker) throws Exception {
+        String id = "M7lc1UVf-VE";
+        for (String url : List.of("https://www.youtube.com/watch?t=8&v=" + id,
+                "https://youtu.be/" + id, "https://m.youtube.com/shorts/" + id,
+                "https://www.youtube.com/live/" + id, "https://www.youtube-nocookie.com/embed/" + id)) {
+            check(LinkPreview.youtubeId(URI.create(url)).equals(id), "recognize YouTube URL");
+        }
+        for (String url : List.of("https://example.com/watch?v=" + id,
+                "https://youtu.be.example.com/" + id, "https://youtube.com/playlist?list=" + id,
+                "https://www.youtube.com/watch?v=short")) {
+            check(LinkPreview.youtubeId(URI.create(url)).isEmpty(), "reject unsupported video URL");
+        }
+        URI base = URI.create("https://example.com/folder/page");
+        String html = "<meta content='/og.png' property='og:image'><meta PROPERTY='og:title' content='T &amp; C'>"
+                + "<meta name=twitter:title content='Alternative'><title>Title</title>";
+        LinkPreview.Metadata metadata = LinkPreview.metadata(html.getBytes(StandardCharsets.UTF_8), "text/html", base);
+        check(metadata.title().equals("T & C") && metadata.image().equals(base.resolve("/og.png")),
+                "decode and resolve HTML metadata");
+        String fallback = "<title>標題</title><meta property=og:image content='http://example.com/unsafe.png'>";
+        check(LinkPreview.metadata(fallback.getBytes(StandardCharsets.UTF_8), "text/html; charset=utf-8", base)
+                .equals(new LinkPreview.Metadata("標題", null)), "HTML title and HTTPS image policy");
+
+        String unreachable = "http://127.0.0.1/" + marker;
+        String videoUrl = "https://youtu.be/" + id;
+        Vault.Entry page = vault.addText("Page " + marker, unreachable, TextFormat.PLAIN, false, "");
+        Vault.Entry video = vault.addText("Video " + marker, videoUrl, TextFormat.PLAIN, false, "");
+        Vault.Entry hidden = vault.addText("Hidden " + marker, "https://example.invalid/" + marker,
+                TextFormat.PLAIN, true, marker);
+        MainActivity screen = null;
+        try {
+            screen = (MainActivity) startActivitySync(new Intent(getTargetContext(), MainActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            MainActivity ui = screen;
+            await(() -> onMain(() -> ui.canAct() && named(root(ui), video.content()) != null), "link fixtures visible");
+            check(onMain(() -> named(root(ui), "網址預覽 · example.invalid") == null
+                    && named(root(ui), hidden.content()) == null), "private preview details stay hidden");
+            onMain(() -> button(root(ui), "網址預覽 · 127.0.0.1").performClick());
+            check(onMain(() -> named(dialogRoot(ui), unreachable) != null
+                    && button(dialogRoot(ui), "載入預覽").isEnabled()
+                    && named(dialogRoot(ui), "正在載入預覽…") == null), "link metadata waits for user action");
+            onMain(() -> button(dialogRoot(ui), "載入預覽").performClick());
+            await(() -> onMain(() -> button(dialogRoot(ui), "重試") != null), "preview failure can be retried");
+            check(onMain(() -> dialog(ui).getButton(AlertDialog.BUTTON_POSITIVE).isEnabled()
+                    && named(dialogRoot(ui), "無法載入網址預覽。") != null), "external fallback remains available");
+            onMain(() -> dialog(ui).getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
+
+            onMain(() -> button(root(ui), "網址預覽 · youtu.be").performClick());
+            check(onMain(() -> named(dialogRoot(ui), videoUrl) != null
+                    && find(dialogRoot(ui), view -> view instanceof android.webkit.WebView) == null),
+                    "opening the URL preview does not create an online player");
+            onMain(() -> button(dialogRoot(ui), "播放 YouTube").performClick());
+            android.webkit.WebView player = onMain(() -> (android.webkit.WebView) find(dialogRoot(ui),
+                    view -> view instanceof android.webkit.WebView));
+            await(() -> previewHas(player, "(document.querySelector('iframe') || {}).src === "
+                            + "'https://www.youtube-nocookie.com/embed/" + id + "?autoplay=1&playsinline=1&fs=0'"),
+                    "official embed is created for the selected video");
+            check(onMain(() -> "在 YouTube 開啟".contentEquals(
+                    dialog(ui).getButton(AlertDialog.BUTTON_POSITIVE).getText())), "YouTube fallback is visible");
+            onMain(() -> dialog(ui).getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
+            await(() -> onMain(() -> dialog(ui) == null && named(root(ui), video.content()) != null),
+                    "closing the player returns to the original clip list");
+        } finally {
+            if (screen != null) {
+                MainActivity ui = screen;
+                runOnMainSync(ui::finish);
+            }
+            vault.delete(page.id());
+            vault.delete(video.id());
+            vault.delete(hidden.id());
         }
     }
 
@@ -842,7 +918,7 @@ public final class PinbaoRegression extends Instrumentation {
                 && dialog.getButton(AlertDialog.BUTTON_NEGATIVE).getVisibility() == View.GONE;
     }
 
-    private boolean previewHas(MarkdownPreview web, String condition) {
+    private boolean previewHas(android.webkit.WebView web, String condition) {
         AtomicReference<String> result = new AtomicReference<>();
         runOnMainSync(() -> web.evaluateJavascript("Boolean(" + condition + ")", result::set));
         long deadline = SystemClock.uptimeMillis() + 1000;

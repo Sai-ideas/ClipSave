@@ -495,6 +495,14 @@ public final class MainActivity extends Activity {
         content.setEllipsize(TextUtils.TruncateAt.END);
         card.addView(content, margins(-1, -2, 10, 9));
 
+        if (!entry.sensitive() && Vault.isWebLink(entry.url())) {
+            String host = java.net.URI.create(entry.url()).getHost();
+            Button preview = button("網址預覽 · " + host, surfaceSoft, accent, () -> previewLink(entry));
+            preview.setMaxLines(1);
+            preview.setEllipsize(TextUtils.TruncateAt.END);
+            card.addView(preview, margins(-2, -2, 0, 8));
+        }
+
         View divider = new View(this);
         divider.setBackgroundColor(outline);
         card.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
@@ -893,15 +901,27 @@ public final class MainActivity extends Activity {
         if (busy) return;
         ArrayList<String> options = new ArrayList<>(Arrays.asList("標題與標籤", "刪除"));
         if (entry.canEditUrl()) options.add("編輯網址");
+        if (entry.sensitive() && !entry.url().isEmpty()) options.add("網址預覽");
         show(new AlertDialog.Builder(this).setTitle("剪輯選項")
                 .setItems(options.toArray(new String[0]), (d, which) -> {
                     switch (options.get(which)) {
                         case "刪除" -> confirm("刪除剪輯", "這筆剪輯將從歷史清單移除。", "刪除",
                                 () -> mutate(() -> { vault.delete(entry.id()); return null; }, "已刪除"));
                         case "編輯網址" -> authorize(entry, "編輯私密網址", this::editUrl);
+                        case "網址預覽" -> previewLink(entry);
                         default -> authorize(entry, "編輯私密剪輯設定", this::editOptions);
                     }
                 }));
+    }
+
+    private void previewLink(Vault.Entry entry) {
+        authorize(entry, "預覽私密網址", current -> {
+            if (!Vault.isWebLink(current.url())) {
+                toast("這張剪輯沒有可預覽的主要網址。");
+                return;
+            }
+            new LinkPreviewDialog(this, current).show();
+        });
     }
 
     private void editUrl(Vault.Entry entry) {
