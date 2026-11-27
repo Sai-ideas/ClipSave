@@ -95,44 +95,72 @@ public final class PinbaoRegression extends Instrumentation {
                 .equals(new LinkPreview.Metadata("標題", null)), "HTML title and HTTPS image policy");
 
         String unreachable = "http://127.0.0.1/" + marker;
+        String primary = "https://property.invalid/" + marker;
         String videoUrl = "https://youtu.be/" + id;
-        Vault.Entry page = vault.addText("Page " + marker, unreachable, TextFormat.PLAIN, false, "");
-        Vault.Entry video = vault.addText("Video " + marker, videoUrl, TextFormat.PLAIN, false, "");
-        Vault.Entry hidden = vault.addText("Hidden " + marker, "https://example.invalid/" + marker,
-                TextFormat.PLAIN, true, marker);
+        check(Article.firstWebLink("`https://code.invalid/` [影片](" + videoUrl + ") "
+                + "https://second.invalid/", TextFormat.MARKDOWN).equals(URI.create(videoUrl)),
+                "use the first visible Markdown link and skip code");
+        check(Article.firstWebLink("![圖片](https://image.invalid/photo.png)\n\n~~~\n"
+                + "https://code.invalid/\n~~~", TextFormat.MARKDOWN) == null,
+                "image sources and fenced code do not trigger a preview");
+        Vault.Entry hidden = vault.addText("Hidden " + marker + "\nhttps://secret.invalid/" + marker,
+                "https://secret-property.invalid/", TextFormat.PLAIN, true, marker);
+        Vault.Entry attributeOnly = vault.addText("Property only " + marker,
+                "https://property-only.invalid/", TextFormat.PLAIN, false, "");
+        Vault.Entry video = vault.addText("Video " + marker + "\n[影片](" + videoUrl + ")",
+                "", TextFormat.MARKDOWN, false, "");
+        Vault.Entry page = vault.addText("Page " + marker + "\n" + unreachable,
+                primary, TextFormat.PLAIN, false, "");
         MainActivity screen = null;
         try {
             screen = (MainActivity) startActivitySync(new Intent(getTargetContext(), MainActivity.class)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             MainActivity ui = screen;
             await(() -> onMain(() -> ui.canAct() && named(root(ui), video.content()) != null), "link fixtures visible");
-            check(onMain(() -> named(root(ui), "網址預覽 · example.invalid") == null
+            check(onMain(() -> named(root(ui), "secret.invalid") == null
                     && named(root(ui), hidden.content()) == null), "private preview details stay hidden");
-            onMain(() -> button(root(ui), "網址預覽 · 127.0.0.1").performClick());
-            check(onMain(() -> named(dialogRoot(ui), unreachable) != null
-                    && button(dialogRoot(ui), "載入預覽").isEnabled()
-                    && named(dialogRoot(ui), "正在載入預覽…") == null), "link metadata waits for user action");
-            onMain(() -> button(dialogRoot(ui), "載入預覽").performClick());
-            await(() -> onMain(() -> button(dialogRoot(ui), "重試") != null), "preview failure can be retried");
-            check(onMain(() -> dialog(ui).getButton(AlertDialog.BUTTON_POSITIVE).isEnabled()
-                    && named(dialogRoot(ui), "無法載入網址預覽。") != null), "external fallback remains available");
-            onMain(() -> dialog(ui).getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
+            check(onMain(() -> named(root(ui), "property.invalid") == null
+                    && named(root(ui), "property-only.invalid") == null), "attributes do not generate preview cards");
+            View pageCard = onMain(() -> (View) named(root(ui), page.content()).getParent());
+            await(() -> onMain(() -> button(pageCard, "重試") != null
+                    && named(pageCard, "127.0.0.1") != null), "body preview automatically loads and handles failure");
+            check(onMain(() -> button(pageCard, "開啟內文連結") != null), "body link fallback remains available");
+            AtomicReference<String> opened = new AtomicReference<>();
+            ActivityMonitor browser = new ActivityMonitor() {
+                @Override public ActivityResult onStartActivity(Intent intent) {
+                    if (!Intent.ACTION_VIEW.equals(intent.getAction())) return null;
+                    opened.set(intent.getDataString());
+                    return new ActivityResult(Activity.RESULT_OK, null);
+                }
+            };
+            addMonitor(browser);
+            try {
+                onMain(() -> described(pageCard, "開啟連結").performClick());
+                await(() -> primary.equals(opened.get()), "toolbar opens the separately stored URL");
+                onMain(() -> button(pageCard, "開啟內文連結").performClick());
+                await(() -> unreachable.equals(opened.get()), "preview opens the URL from the body");
+            } finally {
+                removeMonitor(browser);
+            }
 
-            onMain(() -> button(root(ui), "網址預覽 · youtu.be").performClick());
-            check(onMain(() -> named(dialogRoot(ui), videoUrl) != null
-                    && find(dialogRoot(ui), view -> view instanceof android.webkit.WebView) == null),
-                    "opening the URL preview does not create an online player");
-            onMain(() -> button(dialogRoot(ui), "播放 YouTube").performClick());
-            android.webkit.WebView player = onMain(() -> (android.webkit.WebView) find(dialogRoot(ui),
+            View videoCard = onMain(() -> (View) named(root(ui), video.content()).getParent());
+            check(onMain(() -> !described(videoCard, "開啟連結").isEnabled()
+                    && find(videoCard, view -> view instanceof android.webkit.WebView) == null),
+                    "body video is available with no main URL, but the player waits for a tap");
+            View play = onMain(() -> described(videoCard, "播放 YouTube"));
+            runOnMainSync(() -> play.requestRectangleOnScreen(new android.graphics.Rect(
+                    0, 0, play.getWidth(), play.getHeight()), true));
+            onMain(play::performClick);
+            android.webkit.WebView player = onMain(() -> (android.webkit.WebView) find(videoCard,
                     view -> view instanceof android.webkit.WebView));
+            check(player != null && onMain(() -> dialog(ui) == null), "video loads directly inside the original card");
             await(() -> previewHas(player, "(document.querySelector('iframe') || {}).src === "
                             + "'https://www.youtube-nocookie.com/embed/" + id + "?autoplay=1&playsinline=1&fs=0'"),
                     "official embed is created for the selected video");
-            check(onMain(() -> "在 YouTube 開啟".contentEquals(
-                    dialog(ui).getButton(AlertDialog.BUTTON_POSITIVE).getText())), "YouTube fallback is visible");
-            onMain(() -> dialog(ui).getButton(AlertDialog.BUTTON_NEGATIVE).performClick());
-            await(() -> onMain(() -> dialog(ui) == null && named(root(ui), video.content()) != null),
-                    "closing the player returns to the original clip list");
+            check(onMain(() -> button(videoCard, "在 YouTube 開啟") != null), "YouTube fallback is visible in the card");
+            onMain(() -> button(videoCard, "停止").performClick());
+            await(() -> onMain(() -> find(videoCard, view -> view instanceof android.webkit.WebView) == null
+                    && described(videoCard, "播放 YouTube").isShown()), "stopping restores the same card");
         } finally {
             if (screen != null) {
                 MainActivity ui = screen;
@@ -140,6 +168,7 @@ public final class PinbaoRegression extends Instrumentation {
             }
             vault.delete(page.id());
             vault.delete(video.id());
+            vault.delete(attributeOnly.id());
             vault.delete(hidden.id());
         }
     }

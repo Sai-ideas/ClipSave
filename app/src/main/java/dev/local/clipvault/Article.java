@@ -2,6 +2,7 @@ package dev.local.clipvault;
 
 import android.webkit.MimeTypeMap;
 
+import org.commonmark.ext.autolink.AutolinkExtension;
 import org.commonmark.node.Image;
 import org.commonmark.node.Link;
 import org.commonmark.node.Node;
@@ -14,6 +15,7 @@ import org.nibor.autolink.LinkSpan;
 import org.nibor.autolink.LinkType;
 
 import java.io.OutputStream;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -24,6 +26,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
+import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -33,6 +36,8 @@ final class Article {
 
     private static final Parser SOURCE_PARSER = Parser.builder()
             .includeSourceSpans(IncludeSourceSpans.BLOCKS_AND_INLINES).build();
+    private static final Parser LINK_PARSER = Parser.builder().extensions(List.of(AutolinkExtension.create())).build();
+    private static final Pattern WEB_SCHEME = Pattern.compile("https?://", Pattern.CASE_INSENSITIVE);
 
     private Article() {}
 
@@ -149,6 +154,18 @@ final class Article {
 
     static String textMarkdown(String content, TextFormat format) {
         return format.markdown(content) ? content : literalMarkdown(content);
+    }
+
+    static URI firstWebLink(String content, TextFormat format) {
+        if (!WEB_SCHEME.matcher(content).find()) return null;
+        String source = textMarkdown(content, format);
+        for (Node node = LINK_PARSER.parse(source); node != null; node = nextProseNode(node)) {
+            if (node instanceof Link link && Vault.isWebLink(link.getDestination())) {
+                URI url = URI.create(link.getDestination());
+                if (url.getRawUserInfo() == null) return url;
+            }
+        }
+        return null;
     }
 
     private static String literalMarkdown(String content) {
