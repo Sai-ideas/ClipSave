@@ -148,12 +148,20 @@ public final class PinbaoRegression extends Instrumentation {
                     && find(videoCard, view -> view instanceof android.webkit.WebView) == null),
                     "body video is available with no main URL, but the player waits for a tap");
             View play = onMain(() -> described(videoCard, "播放 YouTube"));
-            runOnMainSync(() -> play.requestRectangleOnScreen(new android.graphics.Rect(
-                    0, 0, play.getWidth(), play.getHeight()), true));
-            onMain(play::performClick);
+            runOnMainSync(() -> {
+                ScrollView scroll = (ScrollView) find(root(ui), view -> view instanceof ScrollView);
+                scroll.scrollTo(0, ((View) videoCard.getParent()).getTop() + videoCard.getTop());
+            });
+            await(() -> onMain(() -> ui.canAct() && play.getGlobalVisibleRect(new android.graphics.Rect())),
+                    "inline play is visible after scrolling to its card");
+            Point playPosition = onMain(() -> center(play));
+            long down = SystemClock.uptimeMillis();
+            dragEvent(down, MotionEvent.ACTION_DOWN, playPosition);
+            dragEvent(down, MotionEvent.ACTION_UP, playPosition);
+            await(() -> onMain(() -> find(videoCard, view -> view instanceof android.webkit.WebView) != null
+                    && dialog(ui) == null), "video loads directly inside the original card");
             android.webkit.WebView player = onMain(() -> (android.webkit.WebView) find(videoCard,
                     view -> view instanceof android.webkit.WebView));
-            check(player != null && onMain(() -> dialog(ui) == null), "video loads directly inside the original card");
             await(() -> previewHas(player, "(document.querySelector('iframe') || {}).src === "
                             + "'https://www.youtube-nocookie.com/embed/" + id + "?autoplay=1&playsinline=1&fs=0'"),
                     "official embed is created for the selected video");

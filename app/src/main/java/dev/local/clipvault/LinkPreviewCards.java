@@ -106,7 +106,6 @@ final class LinkPreviewCards {
 
     void loadVisible() {
         Rect visible = new Rect();
-        if (playing != null && !playing.media.getGlobalVisibleRect(visible)) stopPlaying();
         if (!activity.canAct()) return;
         for (Card card : cards) {
             if (!card.getGlobalVisibleRect(visible)) {
