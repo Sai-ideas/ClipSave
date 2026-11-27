@@ -80,6 +80,7 @@ public final class MainActivity extends Activity {
     private SharedPreferences preferences;
     private LinearLayout root;
     private LinearLayout results;
+    private final LinkPreviewCards linkPreviews = new LinkPreviewCards(this);
     private TextView listTitle;
     private TextView listCount;
     private List<Vault.Entry> entries = Collections.emptyList();
@@ -160,6 +161,7 @@ public final class MainActivity extends Activity {
         if (saveBeforeBackground != null) saveBeforeBackground.run();
         resumed = false;
         foregroundVersion++;
+        linkPreviews.background();
         if (privateDialog) dismissDialog();
         workspace.hidePrivateDraft();
         super.onPause();
@@ -231,6 +233,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        if (linkPreviews.goBack()) return;
         if (!workspace.goBack()) super.onBackPressed();
     }
 
@@ -291,6 +294,8 @@ public final class MainActivity extends Activity {
         strip.addView(chips);
         toolbar.addView(strip, margins(-1, -2, 0, 2));
         LinearLayout page = newPage(toolbar, false);
+        ((ScrollView) page.getParent()).setOnScrollChangeListener((view, x, y, oldX, oldY) ->
+                linkPreviews.loadVisible());
 
         LinearLayout listHeader = row();
         listTitle = text("剪輯", 22, ink, true);
@@ -299,6 +304,8 @@ public final class MainActivity extends Activity {
         listHeader.addView(listCount);
         page.addView(listHeader, margins(-1, -2, 0, 8));
         results = column();
+        results.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
+                linkPreviews.loadVisible());
         page.addView(results);
         page.setFocusableInTouchMode(true);
         page.requestFocus();
@@ -386,6 +393,8 @@ public final class MainActivity extends Activity {
 
     private void startScreen() {
         dismissDialog();
+        linkPreviews.background();
+        linkPreviews.clearCards();
         screenVersion++;
         busy = false;
         root = column();
@@ -415,6 +424,7 @@ public final class MainActivity extends Activity {
             chip.setSelected(i == filter);
         }
         listTitle.setText(FILTERS[filter]);
+        linkPreviews.clearCards();
         results.removeAllViews();
         if (!loaded) {
             listCount.setText("");
@@ -440,6 +450,7 @@ public final class MainActivity extends Activity {
             results.addView(card(entry), margins(-1, -2, 0, 8));
         }
         listCount.setText(count + " 筆");
+        results.post(linkPreviews::loadVisible);
         if (count == 0) {
             TextView message = text(entries.isEmpty() ? "你的剪輯會顯示在這裡。" : "這個篩選條件沒有結果。",
                     15, muted, false);
@@ -495,6 +506,11 @@ public final class MainActivity extends Activity {
         content.setEllipsize(TextUtils.TruncateAt.END);
         card.addView(content, margins(-1, -2, 10, 9));
 
+        android.widget.FrameLayout linkSlot = new android.widget.FrameLayout(this);
+        linkSlot.setVisibility(View.GONE);
+        card.addView(linkSlot, margins(-1, -2, 0, 8));
+        linkPreviews.bind(linkSlot, entry);
+
         View divider = new View(this);
         divider.setBackgroundColor(outline);
         card.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
@@ -525,7 +541,7 @@ public final class MainActivity extends Activity {
         protect.setContentDescription(entry.sensitive() ? "已設為私密" : "設為私密");
         protect.setBackground(buttonBackground(entry.sensitive() ? surfaceSoft : surface, 13));
         actions.addView(protect);
-        actions.addView(actionButton("更多", R.drawable.ic_more, () -> entryOptions(entry)));
+        actions.addView(actionButton("更多", R.drawable.ic_more, () -> entryOptions(entry, linkSlot)));
         if (getResources().getConfiguration().screenWidthDp >= 360) {
             card.addView(actions, margins(-1, -2, 4, 0));
         } else {
@@ -889,16 +905,19 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void entryOptions(Vault.Entry entry) {
+    private void entryOptions(Vault.Entry entry, android.widget.FrameLayout linkSlot) {
         if (busy) return;
         ArrayList<String> options = new ArrayList<>(Arrays.asList("標題與標籤", "刪除"));
         if (entry.canEditUrl()) options.add("編輯網址");
+        if (entry.sensitive() && !entry.attachment()) options.add("預覽內文連結");
         show(new AlertDialog.Builder(this).setTitle("剪輯選項")
                 .setItems(options.toArray(new String[0]), (d, which) -> {
                     switch (options.get(which)) {
                         case "刪除" -> confirm("刪除剪輯", "這筆剪輯將從歷史清單移除。", "刪除",
                                 () -> mutate(() -> { vault.delete(entry.id()); return null; }, "已刪除"));
                         case "編輯網址" -> authorize(entry, "編輯私密網址", this::editUrl);
+                        case "預覽內文連結" -> authorize(entry, "預覽私密內文連結",
+                                current -> linkPreviews.revealPrivate(linkSlot, current));
                         default -> authorize(entry, "編輯私密剪輯設定", this::editOptions);
                     }
                 }));

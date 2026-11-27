@@ -22,6 +22,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.nio.charset.StandardCharsets;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -36,10 +37,12 @@ import java.util.function.Supplier;
 public final class PinbaoRegression extends Instrumentation {
     private record Point(float x, float y) {}
     private boolean contentOnly;
+    private boolean linksOnly;
 
     @Override public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
         contentOnly = arguments != null && "content".equals(arguments.getString("scope"));
+        linksOnly = arguments != null && "links".equals(arguments.getString("scope"));
         start();
     }
 
@@ -47,7 +50,7 @@ public final class PinbaoRegression extends Instrumentation {
         Bundle report = new Bundle();
         try {
             Vault vault = Vault.get(getTargetContext());
-            if (!contentOnly) {
+            if (!contentOnly && !linksOnly) {
                 checklist();
                 arrangement();
                 privacy(vault, UUID.randomUUID().toString());
@@ -55,16 +58,130 @@ public final class PinbaoRegression extends Instrumentation {
                 reorder(vault, UUID.randomUUID().toString());
                 workspace(vault, UUID.randomUUID().toString());
             }
-            contentEditing(vault, UUID.randomUUID().toString());
+            if (!linksOnly) contentEditing(vault, UUID.randomUUID().toString());
+            linkPreviews(vault, UUID.randomUUID().toString());
             var config = getTargetContext().getResources().getConfiguration();
             int dpi = getTargetContext().getResources().getDisplayMetrics().densityDpi;
-            report.putString("stream", "PASS " + (contentOnly ? "" : "Pinbao, ")
-                    + "content editing, Markdown, and image preview at " + config.screenWidthDp
+            report.putString("stream", "PASS " + (linksOnly ? "" : (contentOnly ? "" : "Pinbao, ")
+                    + "content editing, Markdown, image preview, and ") + "URL and video preview at " + config.screenWidthDp
                     + "dp, font scale " + config.fontScale + ", density " + dpi + "dpi\n");
             finish(Activity.RESULT_OK, report);
         } catch (Throwable error) {
             report.putString("stream", android.util.Log.getStackTraceString(error));
             finish(Activity.RESULT_CANCELED, report);
+        }
+    }
+
+    private void linkPreviews(Vault vault, String marker) throws Exception {
+        String id = "M7lc1UVf-VE";
+        URI cover = URI.create("https://i.ytimg.com/vi/" + id + "/hqdefault.jpg");
+        for (String url : List.of("https://www.youtube.com/watch?t=8&v=" + id,
+                "https://youtu.be/" + id, "https://m.youtube.com/shorts/" + id,
+                "https://www.youtube.com/live/" + id, "https://www.youtube-nocookie.com/embed/" + id)) {
+            check(LinkPreview.youtubeId(URI.create(url)).equals(id), "recognize YouTube URL");
+            check(cover.equals(LinkPreview.youtubeThumbnailUrl(URI.create(url))), "same cover for each YouTube URL");
+        }
+        for (String url : List.of("https://example.com/watch?v=" + id,
+                "https://youtu.be.example.com/" + id, "https://youtube.com/playlist?list=" + id,
+                "https://www.youtube.com/watch?v=short")) {
+            check(LinkPreview.youtubeId(URI.create(url)).isEmpty(), "reject unsupported video URL");
+            check(LinkPreview.youtubeThumbnailUrl(URI.create(url)) == null, "unsupported URLs use page metadata");
+        }
+        URI base = URI.create("https://example.com/folder/page");
+        String html = "<meta content='/og.png' property='og:image'><meta PROPERTY='og:title' content='T &amp; C'>"
+                + "<meta name=twitter:title content='Alternative'><title>Title</title>";
+        LinkPreview.Metadata metadata = LinkPreview.metadata(html.getBytes(StandardCharsets.UTF_8), "text/html", base);
+        check(metadata.title().equals("T & C") && metadata.image().equals(base.resolve("/og.png")),
+                "decode and resolve HTML metadata");
+        String fallback = "<title>標題</title><meta property=og:image content='http://example.com/unsafe.png'>";
+        check(LinkPreview.metadata(fallback.getBytes(StandardCharsets.UTF_8), "text/html; charset=utf-8", base)
+                .equals(new LinkPreview.Metadata("標題", null)), "HTML title and HTTPS image policy");
+
+        String unreachable = "http://127.0.0.1/" + marker;
+        String primary = "https://property.invalid/" + marker;
+        String videoUrl = "https://youtu.be/" + id;
+        check(Article.firstWebLink("`https://code.invalid/` [影片](" + videoUrl + ") "
+                + "https://second.invalid/", TextFormat.MARKDOWN).equals(URI.create(videoUrl)),
+                "use the first visible Markdown link and skip code");
+        check(Article.firstWebLink("![圖片](https://image.invalid/photo.png)\n\n~~~\n"
+                + "https://code.invalid/\n~~~", TextFormat.MARKDOWN) == null,
+                "image sources and fenced code do not trigger a preview");
+        Vault.Entry hidden = vault.addText("Hidden " + marker + "\nhttps://secret.invalid/" + marker,
+                "https://secret-property.invalid/", TextFormat.PLAIN, true, marker);
+        Vault.Entry attributeOnly = vault.addText("Property only " + marker,
+                "https://property-only.invalid/", TextFormat.PLAIN, false, "");
+        Vault.Entry video = vault.addText("Video " + marker + "\n[影片](" + videoUrl + ")",
+                "", TextFormat.MARKDOWN, false, "");
+        Vault.Entry page = vault.addText("Page " + marker + "\n" + unreachable,
+                primary, TextFormat.PLAIN, false, "");
+        MainActivity screen = null;
+        try {
+            screen = (MainActivity) startActivitySync(new Intent(getTargetContext(), MainActivity.class)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            MainActivity ui = screen;
+            await(() -> onMain(() -> ui.canAct() && named(root(ui), video.content()) != null), "link fixtures visible");
+            check(onMain(() -> named(root(ui), "secret.invalid") == null
+                    && named(root(ui), hidden.content()) == null), "private preview details stay hidden");
+            check(onMain(() -> named(root(ui), "property.invalid") == null
+                    && named(root(ui), "property-only.invalid") == null), "attributes do not generate preview cards");
+            View pageCard = onMain(() -> (View) named(root(ui), page.content()).getParent());
+            await(() -> onMain(() -> button(pageCard, "重試") != null
+                    && named(pageCard, "127.0.0.1") != null), "body preview automatically loads and handles failure");
+            check(onMain(() -> button(pageCard, "開啟內文連結") != null), "body link fallback remains available");
+            View videoCard = onMain(() -> (View) named(root(ui), video.content()).getParent());
+            check(onMain(() -> !described(videoCard, "開啟連結").isEnabled()
+                    && find(videoCard, view -> view instanceof android.webkit.WebView) == null),
+                    "body video is available with no main URL, but the player waits for a tap");
+            View play = onMain(() -> described(videoCard, "播放 YouTube"));
+            runOnMainSync(() -> {
+                ScrollView scroll = (ScrollView) find(root(ui), view -> view instanceof ScrollView);
+                scroll.scrollTo(0, ((View) videoCard.getParent()).getTop() + videoCard.getTop());
+            });
+            await(() -> onMain(() -> ui.canAct() && play.getGlobalVisibleRect(new android.graphics.Rect())),
+                    "inline play is visible after scrolling to its card");
+            Point playPosition = onMain(() -> center(play));
+            long down = SystemClock.uptimeMillis();
+            dragEvent(down, MotionEvent.ACTION_DOWN, playPosition);
+            dragEvent(down, MotionEvent.ACTION_UP, playPosition);
+            await(() -> onMain(() -> find(videoCard, view -> view instanceof android.webkit.WebView) != null
+                    && dialog(ui) == null), "video loads directly inside the original card");
+            android.webkit.WebView player = onMain(() -> (android.webkit.WebView) find(videoCard,
+                    view -> view instanceof android.webkit.WebView));
+            await(() -> previewHas(player, "(document.querySelector('iframe') || {}).src === "
+                            + "'https://www.youtube-nocookie.com/embed/" + id + "?autoplay=1&playsinline=1&fs=0'"),
+                    "official embed is created for the selected video");
+            check(onMain(() -> button(videoCard, "在 YouTube 開啟") != null), "YouTube fallback is visible in the card");
+            onMain(() -> button(videoCard, "停止").performClick());
+            await(() -> onMain(() -> find(videoCard, view -> view instanceof android.webkit.WebView) == null
+                    && described(videoCard, "播放 YouTube").isShown()), "stopping restores the same card");
+
+            AtomicReference<String> opened = new AtomicReference<>();
+            ActivityMonitor browser = new ActivityMonitor() {
+                @Override public ActivityResult onStartActivity(Intent intent) {
+                    if (!Intent.ACTION_VIEW.equals(intent.getAction())) return null;
+                    opened.set(intent.getDataString());
+                    return new ActivityResult(Activity.RESULT_OK, null);
+                }
+            };
+            addMonitor(browser);
+            try {
+                onMain(() -> described((View) named(root(ui), page.content()).getParent(), "開啟連結").performClick());
+                await(() -> primary.equals(opened.get()), "toolbar opens the separately stored URL");
+                onMain(() -> button((View) named(root(ui), page.content()).getParent(), "開啟內文連結").performClick());
+                await(() -> unreachable.equals(opened.get()), "preview opens the URL from the body");
+            } finally {
+                removeMonitor(browser);
+            }
+
+        } finally {
+            if (screen != null) {
+                MainActivity ui = screen;
+                runOnMainSync(ui::finish);
+            }
+            vault.delete(page.id());
+            vault.delete(video.id());
+            vault.delete(attributeOnly.id());
+            vault.delete(hidden.id());
         }
     }
 
@@ -842,7 +959,7 @@ public final class PinbaoRegression extends Instrumentation {
                 && dialog.getButton(AlertDialog.BUTTON_NEGATIVE).getVisibility() == View.GONE;
     }
 
-    private boolean previewHas(MarkdownPreview web, String condition) {
+    private boolean previewHas(android.webkit.WebView web, String condition) {
         AtomicReference<String> result = new AtomicReference<>();
         runOnMainSync(() -> web.evaluateJavascript("Boolean(" + condition + ")", result::set));
         long deadline = SystemClock.uptimeMillis() + 1000;
