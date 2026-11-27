@@ -135,7 +135,7 @@ record Draft(String id, String title, List<Block> blocks, long updatedAt,
         ArrayList<Block> next = new ArrayList<>(blocks);
         Block block = next.get(index);
         next.set(index, new Block(block.id(), block.sourceId(), block.mime(), block.content(), block.bytes(),
-                block.sensitive(), !block.expanded()));
+                block.sensitive(), !block.expanded(), block.format()));
         return new Draft(id, title, next, updatedAt, manualLock, groups);
     }
 
@@ -206,7 +206,7 @@ record Draft(String id, String title, List<Block> blocks, long updatedAt,
     }
 
     record Block(String id, String sourceId, String mime, String content, int bytes, boolean sensitive,
-                 boolean expanded) {
+                 boolean expanded, TextFormat format) {
         static final String PARAGRAPH = "text/plain";
         static final String HEADING = "text/heading";
 
@@ -235,12 +235,12 @@ record Draft(String id, String title, List<Block> blocks, long updatedAt,
         }
 
         static Block text(String mime, String content) {
-            return new Block(UUID.randomUUID().toString(), "", mime, content, 0, false, false);
+            return new Block(UUID.randomUUID().toString(), "", mime, content, 0, false, false, TextFormat.PLAIN);
         }
 
         static Block fromClip(Vault.Entry source) {
             return new Block(UUID.randomUUID().toString(), source.id(), source.mime(), source.content(),
-                    source.bytes(), source.sensitive(), false);
+                    source.bytes(), source.sensitive(), false, source.format());
         }
 
         boolean image() { return mime.startsWith("image/"); }
@@ -253,25 +253,34 @@ record Draft(String id, String title, List<Block> blocks, long updatedAt,
         }
 
         Block withContent(String value) {
-            return new Block(id, sourceId, mime, value, bytes, sensitive, expanded);
+            return withText(value, format);
+        }
+
+        Block withText(String value, TextFormat kind) {
+            return new Block(id, sourceId, mime, value, bytes, sensitive, expanded, kind);
         }
 
         Block protect() {
-            return new Block(id, sourceId, mime, content, bytes, true, expanded);
+            return new Block(id, sourceId, mime, content, bytes, true, expanded, format);
         }
 
         JSONObject toJson() throws Exception {
             return new JSONObject().put("id", id).put("sourceId", sourceId).put("mime", mime)
                     .put("content", content).put("bytes", bytes).put("sensitive", sensitive)
-                    .put("expanded", expanded);
+                    .put("expanded", expanded).put("format", format.name());
         }
 
         static Block fromJson(JSONObject json, boolean legacySensitive) throws Exception {
             String sourceId = json.getString("sourceId");
             // Older protected drafts did not distinguish copied public blocks from private ones.
             boolean sensitive = json.optBoolean("sensitive", legacySensitive && !sourceId.isEmpty());
-            return new Block(json.getString("id"), sourceId, json.getString("mime"),
-                    json.getString("content"), json.getInt("bytes"), sensitive, json.optBoolean("expanded"));
+            String mime = json.getString("mime");
+            String content = json.getString("content");
+            // Older builds could store a link-only block with no text.
+            if (mime.equals(PARAGRAPH) && content.trim().isEmpty()) content = json.optString("url", "");
+            TextFormat fallback = sourceId.isEmpty() ? TextFormat.PLAIN : TextFormat.LEGACY;
+            return new Block(json.getString("id"), sourceId, mime, content, json.getInt("bytes"),
+                    sensitive, json.optBoolean("expanded"), TextFormat.stored(json.optString("format"), fallback));
         }
     }
 }

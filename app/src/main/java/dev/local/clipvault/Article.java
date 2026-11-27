@@ -2,32 +2,135 @@ package dev.local.clipvault;
 
 import android.webkit.MimeTypeMap;
 
+import org.commonmark.node.Image;
+import org.commonmark.node.Link;
+import org.commonmark.node.Node;
+import org.commonmark.node.SourceSpan;
+import org.commonmark.node.Text;
+import org.commonmark.parser.IncludeSourceSpans;
+import org.commonmark.parser.Parser;
+import org.nibor.autolink.LinkExtractor;
+import org.nibor.autolink.LinkSpan;
+import org.nibor.autolink.LinkType;
+
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
+import java.util.function.Consumer;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 final class Article {
+    private static final LinkExtractor LINKS =
+            LinkExtractor.builder().linkTypes(EnumSet.of(LinkType.URL)).build();
+
+    private static final Parser SOURCE_PARSER = Parser.builder()
+            .includeSourceSpans(IncludeSourceSpans.BLOCKS_AND_INLINES).build();
+
     private Article() {}
 
-    static String render(Draft draft, boolean markdown) {
-        StringBuilder result = new StringBuilder(markdown ? "# " : "").append(draft.title());
-        HashMap<String, String> names = markdown ? imageNames(draft) : new HashMap<>();
+    private record BlockRange(int index, int start, int end) {
+        boolean contains(int position) { return position >= start && position < end; }
+    }
+
+    record Preview(String source, List<BlockRange> tasks) {
+        boolean canToggle(int position) {
+            return rangeAt(position) != null;
+        }
+
+        Draft toggle(Draft draft, int position, boolean checked) {
+            BlockRange range = rangeAt(position);
+            if (range == null) return draft;
+            Draft.Block block = draft.blocks().get(range.index());
+            String content = block.kind() == Draft.Block.Kind.CHECKLIST
+                    ? formatText(block, true) : block.content();
+            String changed = MarkdownPreview.updateTask(content, position - range.start(), checked);
+            if (content.equals(changed)) return draft;
+            ArrayList<Draft.Block> blocks = new ArrayList<>(draft.blocks());
+            blocks.set(range.index(), block.withContent(changed));
+            return draft.withContent(draft.title(), blocks);
+        }
+
+        private BlockRange rangeAt(int position) {
+            for (BlockRange range : tasks) {
+                if (range.contains(position)) return range;
+            }
+            return null;
+        }
+    }
+
+    static Preview preview(Draft draft) {
+        ArrayList<BlockRange> ranges = new ArrayList<>();
+        return new Preview(render(draft, ranges::add), ranges);
+    }
+
+    static String render(Draft draft) {
+        return render(draft, null);
+    }
+
+    private static String render(Draft draft, Consumer<BlockRange> taskRange) {
+        StringBuilder result = new StringBuilder("# ").append(escapeLiteral(draft.title()));
+        HashMap<String, String> names = imageNames(draft);
         for (int index = 0; index < draft.blocks().size(); index++) {
             Draft.Block block = draft.blocks().get(index);
             result.append("\n\n");
             if (block.image()) {
-                if (markdown) result.append("![圖片](").append(names.get(block.sourceId())).append(')');
-                else result.append("[圖片：").append(block.content()).append(']');
+                result.append("![圖片](").append(names.get(block.sourceId())).append(')');
             } else {
-                result.append(formatText(block, markdown));
+                int start = result.length();
+                result.append(formatText(block, true));
+                if (taskRange != null && (block.kind() == Draft.Block.Kind.CHECKLIST
+                        || (block.kind() == Draft.Block.Kind.TEXT && block.format().markdown(block.content())))) {
+                    taskRange.accept(new BlockRange(index, start, result.length()));
+                }
             }
         }
         return result.append('\n').toString();
+    }
+
+    static String exportMarkdown(Draft draft) {
+        return linkProse(render(draft));
+    }
+
+    static String linkProse(String source) {
+        ArrayList<SourceSpan> ranges = new ArrayList<>();
+        for (Node node = SOURCE_PARSER.parse(source); node != null; node = nextProseNode(node)) {
+            if (!(node instanceof Text text)) continue;
+            for (SourceSpan span : text.getSourceSpans()) {
+                String raw = source.substring(span.getInputIndex(), span.getInputIndex() + span.getLength());
+                for (LinkSpan link : LINKS.extractLinks(raw)) {
+                    String url = raw.substring(link.getBeginIndex(), link.getEndIndex());
+                    if (Vault.isWebLink(url)) ranges.add(span.subSpan(link.getBeginIndex(), link.getEndIndex()));
+                }
+            }
+        }
+        if (ranges.isEmpty()) return source;
+        ranges.sort(Comparator.comparingInt(SourceSpan::getInputIndex));
+        StringBuilder output = new StringBuilder(source.length() + ranges.size() * 2);
+        int end = 0;
+        for (SourceSpan range : ranges) {
+            int start = range.getInputIndex();
+            if (start < end) continue;
+            output.append(source, end, start).append('<');
+            end = start + range.getLength();
+            output.append(source, start, end).append('>');
+        }
+        return output.append(source, end, source.length()).toString();
+    }
+
+    private static Node nextProseNode(Node node) {
+        if (!(node instanceof Link) && !(node instanceof Image) && node.getFirstChild() != null) {
+            return node.getFirstChild();
+        }
+        while (node != null && node.getNext() == null) node = node.getParent();
+        return node == null ? null : node.getNext();
     }
 
     static String formatText(Draft.Block block, boolean markdown) {
@@ -40,8 +143,37 @@ final class Article {
             case QUOTE, BULLETS, NUMBERED -> formatLines(content, kind, markdown);
             case CHECKLIST -> Checklist.render(Checklist.items(content), markdown);
             case CODE -> markdown ? fencedCode(content) : content;
-            case TEXT -> markdown && Vault.isWebLink(content) ? "<" + content.trim() + ">" : content;
+            case TEXT -> markdown ? textMarkdown(content, block.format()) : content;
         };
+    }
+
+    static String textMarkdown(String content, TextFormat format) {
+        return format.markdown(content) ? content : literalMarkdown(content);
+    }
+
+    private static String literalMarkdown(String content) {
+        String text = normalizeLines(content);
+        StringBuilder result = new StringBuilder();
+        int start = 0;
+        for (LinkSpan span : LINKS.extractLinks(text)) {
+            String url = text.substring(span.getBeginIndex(), span.getEndIndex());
+            if (!Vault.isWebLink(url)) continue;
+            result.append(escapeLiteral(text.substring(start, span.getBeginIndex())));
+            result.append('<').append(url).append('>');
+            start = span.getEndIndex();
+        }
+        return result.append(escapeLiteral(text.substring(start))).toString();
+    }
+
+    private static String escapeLiteral(String text) {
+        StringBuilder escaped = new StringBuilder(text.length());
+        for (int index = 0; index < text.length(); index++) {
+            char symbol = text.charAt(index);
+            if (symbol == '\n') escaped.append("  ");
+            else if ("\\`*_{}[]()#+-.!|>~<&=".indexOf(symbol) >= 0) escaped.append('\\');
+            escaped.append(symbol);
+        }
+        return escaped.toString();
     }
 
     private static String setextHeading(String content) {
@@ -92,7 +224,7 @@ final class Article {
         HashMap<String, String> names = imageNames(draft);
         HashSet<String> written = new HashSet<>();
         try (ZipOutputStream zip = new ZipOutputStream(destination)) {
-            write(zip, "article.md", render(draft, true).getBytes(StandardCharsets.UTF_8));
+            write(zip, "article.md", exportMarkdown(draft).getBytes(StandardCharsets.UTF_8));
             for (int index = 0; index < draft.blocks().size(); index++) {
                 Draft.Block block = draft.blocks().get(index);
                 if (!block.image() || !written.add(block.sourceId())) continue;
@@ -106,7 +238,7 @@ final class Article {
         }
     }
 
-    private static HashMap<String, String> imageNames(Draft draft) {
+    static HashMap<String, String> imageNames(Draft draft) {
         HashMap<String, String> names = new HashMap<>();
         for (int index = 0; index < draft.blocks().size(); index++) {
             Draft.Block block = draft.blocks().get(index);
