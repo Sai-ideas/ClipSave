@@ -2,7 +2,6 @@ package dev.local.clipvault;
 
 import android.app.AlertDialog;
 import android.graphics.Color;
-import android.text.TextUtils;
 import android.view.View;
 import android.webkit.CookieManager;
 import android.webkit.WebResourceError;
@@ -53,8 +52,6 @@ final class LinkPreviewDialog {
         int panel = activity.getColor(R.color.vault_surface_soft);
         body.addView(activity.text(url.getHost(), 17, ink, true));
         TextView address = activity.text(entry.url(), 14, muted, false);
-        address.setMaxLines(3);
-        address.setEllipsize(TextUtils.TruncateAt.END);
         if (!entry.sensitive()) address.setTextIsSelectable(true);
         body.addView(address, activity.margins(-1, -2, 4, 8));
 
@@ -71,7 +68,9 @@ final class LinkPreviewDialog {
         body.addView(status, activity.margins(-1, -2, 4, 8));
 
         if (entry.sensitive()) {
-            body.addView(activity.text("載入預覽或播放時，會連線到該網站。", 13, muted, false),
+            String disclosure = videoId.isEmpty() ? "載入預覽時，會連線到該網站。"
+                    : "載入預覽或播放時，會連線到該網站。";
+            body.addView(activity.text(disclosure, 13, muted, false),
                     activity.margins(-1, -2, 0, 8));
         }
         if (!videoId.isEmpty()) {

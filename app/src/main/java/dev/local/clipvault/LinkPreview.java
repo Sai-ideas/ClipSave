@@ -13,7 +13,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
-import java.net.Proxy;
 import java.net.URI;
 import java.nio.charset.Charset;
 import java.util.Locale;
@@ -118,7 +117,7 @@ final class LinkPreview {
         for (int redirects = 0; redirects <= 4; redirects++) {
             int timeout = timeout(deadline);
             checkPublicHost(url);
-            HttpURLConnection connection = (HttpURLConnection) url.toURL().openConnection(Proxy.NO_PROXY);
+            HttpURLConnection connection = (HttpURLConnection) url.toURL().openConnection();
             try {
                 connection.setInstanceFollowRedirects(false);
                 connection.setUseCaches(false);
