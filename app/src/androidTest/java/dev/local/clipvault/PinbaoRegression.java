@@ -74,15 +74,18 @@ public final class PinbaoRegression extends Instrumentation {
 
     private void linkPreviews(Vault vault, String marker) throws Exception {
         String id = "M7lc1UVf-VE";
+        URI cover = URI.create("https://i.ytimg.com/vi/" + id + "/hqdefault.jpg");
         for (String url : List.of("https://www.youtube.com/watch?t=8&v=" + id,
                 "https://youtu.be/" + id, "https://m.youtube.com/shorts/" + id,
                 "https://www.youtube.com/live/" + id, "https://www.youtube-nocookie.com/embed/" + id)) {
             check(LinkPreview.youtubeId(URI.create(url)).equals(id), "recognize YouTube URL");
+            check(cover.equals(LinkPreview.youtubeThumbnailUrl(URI.create(url))), "same cover for each YouTube URL");
         }
         for (String url : List.of("https://example.com/watch?v=" + id,
                 "https://youtu.be.example.com/" + id, "https://youtube.com/playlist?list=" + id,
                 "https://www.youtube.com/watch?v=short")) {
             check(LinkPreview.youtubeId(URI.create(url)).isEmpty(), "reject unsupported video URL");
+            check(LinkPreview.youtubeThumbnailUrl(URI.create(url)) == null, "unsupported URLs use page metadata");
         }
         URI base = URI.create("https://example.com/folder/page");
         String html = "<meta content='/og.png' property='og:image'><meta PROPERTY='og:title' content='T &amp; C'>"

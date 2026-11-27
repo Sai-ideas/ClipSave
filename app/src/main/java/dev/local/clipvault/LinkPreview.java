@@ -63,17 +63,35 @@ final class LinkPreview {
 
     static Result load(URI url) throws IOException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(12);
-        Resource page = fetch(url, false, deadline);
-        Metadata metadata = metadata(page.bytes(), page.contentType(), page.url());
-        Bitmap thumbnail = null;
-        if (metadata.image() != null) {
-            try {
-                thumbnail = decodeThumbnail(fetch(metadata.image(), true, deadline).bytes());
-            } catch (IOException ignored) {
-                // The page title remains usable when the thumbnail is unavailable.
-            }
+        URI coverUrl = youtubeThumbnailUrl(url);
+        Bitmap cover = loadThumbnail(coverUrl, Math.min(deadline,
+                System.nanoTime() + TimeUnit.SECONDS.toNanos(4)));
+        try {
+            // A usable video cover should not wait for a slow watch page.
+            long pageDeadline = cover == null ? deadline : Math.min(deadline,
+                    System.nanoTime() + TimeUnit.SECONDS.toNanos(2));
+            Resource page = fetch(url, false, pageDeadline);
+            Metadata metadata = metadata(page.bytes(), page.contentType(), page.url());
+            Bitmap thumbnail = cover == null ? loadThumbnail(metadata.image(), deadline) : cover;
+            return new Result(metadata.title(), thumbnail);
+        } catch (IOException error) {
+            if (cover == null) throw error;
+            return new Result("", cover);
         }
-        return new Result(metadata.title(), thumbnail);
+    }
+
+    static URI youtubeThumbnailUrl(URI url) {
+        String id = isHttp(url) ? youtubeId(url) : "";
+        return id.isEmpty() ? null : URI.create("https://i.ytimg.com/vi/" + id + "/hqdefault.jpg");
+    }
+
+    private static Bitmap loadThumbnail(URI url, long deadline) {
+        if (url == null) return null;
+        try {
+            return decodeThumbnail(fetch(url, true, deadline).bytes());
+        } catch (IOException ignored) {
+            return null;
+        }
     }
 
     static Metadata metadata(byte[] html, String contentType, URI url) throws IOException {
