@@ -125,24 +125,6 @@ public final class PinbaoRegression extends Instrumentation {
             await(() -> onMain(() -> button(pageCard, "重試") != null
                     && named(pageCard, "127.0.0.1") != null), "body preview automatically loads and handles failure");
             check(onMain(() -> button(pageCard, "開啟內文連結") != null), "body link fallback remains available");
-            AtomicReference<String> opened = new AtomicReference<>();
-            ActivityMonitor browser = new ActivityMonitor() {
-                @Override public ActivityResult onStartActivity(Intent intent) {
-                    if (!Intent.ACTION_VIEW.equals(intent.getAction())) return null;
-                    opened.set(intent.getDataString());
-                    return new ActivityResult(Activity.RESULT_OK, null);
-                }
-            };
-            addMonitor(browser);
-            try {
-                onMain(() -> described(pageCard, "開啟連結").performClick());
-                await(() -> primary.equals(opened.get()), "toolbar opens the separately stored URL");
-                onMain(() -> button(pageCard, "開啟內文連結").performClick());
-                await(() -> unreachable.equals(opened.get()), "preview opens the URL from the body");
-            } finally {
-                removeMonitor(browser);
-            }
-
             View videoCard = onMain(() -> (View) named(root(ui), video.content()).getParent());
             check(onMain(() -> !described(videoCard, "開啟連結").isEnabled()
                     && find(videoCard, view -> view instanceof android.webkit.WebView) == null),
@@ -169,6 +151,25 @@ public final class PinbaoRegression extends Instrumentation {
             onMain(() -> button(videoCard, "停止").performClick());
             await(() -> onMain(() -> find(videoCard, view -> view instanceof android.webkit.WebView) == null
                     && described(videoCard, "播放 YouTube").isShown()), "stopping restores the same card");
+
+            AtomicReference<String> opened = new AtomicReference<>();
+            ActivityMonitor browser = new ActivityMonitor() {
+                @Override public ActivityResult onStartActivity(Intent intent) {
+                    if (!Intent.ACTION_VIEW.equals(intent.getAction())) return null;
+                    opened.set(intent.getDataString());
+                    return new ActivityResult(Activity.RESULT_OK, null);
+                }
+            };
+            addMonitor(browser);
+            try {
+                onMain(() -> described((View) named(root(ui), page.content()).getParent(), "開啟連結").performClick());
+                await(() -> primary.equals(opened.get()), "toolbar opens the separately stored URL");
+                onMain(() -> button((View) named(root(ui), page.content()).getParent(), "開啟內文連結").performClick());
+                await(() -> unreachable.equals(opened.get()), "preview opens the URL from the body");
+            } finally {
+                removeMonitor(browser);
+            }
+
         } finally {
             if (screen != null) {
                 MainActivity ui = screen;
